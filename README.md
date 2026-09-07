@@ -65,6 +65,17 @@ non-link-local address *and* a default router, and then **pings the gateway**. A
 whose uplink is dead presents a fully configured interface; only a reply distinguishes
 it from a working one. No reply means NetworkToggle notifies instead of switching.
 
+## Download
+
+**[Download NetworkToggle (.dmg)](https://github.com/smanke/NetworkToggle/releases/latest/download/NetworkToggle.dmg)** — always the latest release.
+
+Drag it to Applications and open it, then click **Install helper** once and approve the
+prompt. Changing the connection order is a system setting, so it needs a small
+privileged helper; the app itself holds no elevated rights.
+
+Every [release](https://github.com/smanke/NetworkToggle/releases) also carries a
+version-stamped copy of the same image, for pinning to a specific build.
+
 ## Build
 
 ```
@@ -99,8 +110,17 @@ Cutting a release:
 
 ```
 ./build_app.sh && ./notarize.sh && ./make_dmg.sh
-gh release create vX.Y.Z ".build/app/NetworkToggle-X.Y.Z.dmg" --repo smanke/NetworkToggle
+cp .build/app/NetworkToggle-X.Y.Z.dmg .build/app/NetworkToggle.dmg
+gh release create vX.Y.Z \
+  ".build/app/NetworkToggle-X.Y.Z.dmg" \
+  ".build/app/NetworkToggle.dmg" \
+  --repo smanke/NetworkToggle
 ```
+
+Both copies go up deliberately. GitHub's `releases/latest/download/<name>` redirect
+needs an asset whose name does not change between releases, which is what makes the
+download link in this README permanent; the version-stamped copy is what someone pins
+to. They are byte-identical, so it does not matter which one the updater picks up.
 
 Both the app *and* the disk image need their own notarization ticket: a download picks
 up a quarantine attribute and Gatekeeper checks the image before it looks at the app.
