@@ -30,6 +30,8 @@ enum UpdateController {
             let current = AppInfo.version
             do {
                 let release = try await fetchLatestRelease()
+                Diagnostics.note("update check: latest=\(release.version) current=\(current) "
+                                 + "newer=\(isNewer(release.version, than: current))")
                 guard isNewer(release.version, than: current) else {
                     if !silent { present(.upToDate(current: current)) }
                     return
