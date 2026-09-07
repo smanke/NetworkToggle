@@ -109,18 +109,19 @@ signing requirement is pinned to the team, not to a code hash.
 Cutting a release:
 
 ```
-./build_app.sh && ./notarize.sh && ./make_dmg.sh
-cp .build/app/NetworkToggle-X.Y.Z.dmg .build/app/NetworkToggle.dmg
-gh release create vX.Y.Z \
-  ".build/app/NetworkToggle-X.Y.Z.dmg" \
-  ".build/app/NetworkToggle.dmg" \
-  --repo smanke/NetworkToggle
+./release.sh 1.0.4
 ```
 
-Both copies go up deliberately. GitHub's `releases/latest/download/<name>` redirect
-needs an asset whose name does not change between releases, which is what makes the
-download link in this README permanent; the version-stamped copy is what someone pins
-to. They are byte-identical, so it does not matter which one the updater picks up.
+That sets the version, builds, notarizes, makes the disk image, tags, publishes, and
+then checks that the permanent download link actually resolves before reporting success.
+Set `RELEASE_NOTES` to supply the release body.
+
+Every release carries the same disk image twice: version-stamped, and under the fixed
+name `NetworkToggle.dmg`. GitHub's `releases/latest/download/<name>` redirect can only
+resolve against an asset whose name is identical in every release, so shipping only the
+version-stamped copy silently 404s the download link in this README for everyone —
+which is exactly what happened to v1.0.3 when it was published by hand. `make_dmg.sh`
+now emits both, and `release.sh` uploads both.
 
 Both the app *and* the disk image need their own notarization ticket: a download picks
 up a quarantine attribute and Gatekeeper checks the image before it looks at the app.
