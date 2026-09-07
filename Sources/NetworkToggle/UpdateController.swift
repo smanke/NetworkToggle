@@ -290,9 +290,16 @@ enum UpdateController {
         // take focus — runModal() then returns its default button without ever showing
         // anything. Becoming a regular app for the duration gives the alert something to
         // belong to; the policy is restored either way.
+        //
+        // Restoring the old policy synchronously does not take: AppKit ignores a
+        // .regular -> .accessory transition while the app is still active from the
+        // modal, which would leave a menu bar app sitting in the Dock. Doing it on
+        // the next runloop turn, once the alert is gone, works.
         let previousPolicy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.regular)
-        defer { NSApp.setActivationPolicy(previousPolicy) }
+        defer {
+            DispatchQueue.main.async { NSApp.setActivationPolicy(previousPolicy) }
+        }
 
         let alert = NSAlert()
         alert.messageText = "Update to version \(newVersion)?"
