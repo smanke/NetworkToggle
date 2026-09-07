@@ -42,9 +42,10 @@ struct SettingsView: View {
 
             Section("Updates") {
                 Toggle("Check for updates at launch", isOn: $settings.checkForUpdatesAtLaunch)
-                Text("Silent unless a newer release is found. Updates are refused unless "
-                     + "they are signed by the same developer as this copy and notarized "
-                     + "by Apple.")
+                Text("The launch check never installs anything on its own — it puts an "
+                     + "\u{201C}Update to…\u{201D} item in the menu and waits for you. Updates are "
+                     + "refused unless they are signed by the same developer as this copy "
+                     + "and notarized by Apple.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

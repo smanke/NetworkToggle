@@ -40,11 +40,30 @@ enum UpdateController {
                 if silent, AppSettings.shared.skippedUpdateVersion == release.version {
                     return
                 }
-                switch confirmInstall(newVersion: release.version, current: current, allowSkip: silent) {
+
+                // The launch check never installs. It only records that something is
+                // available, and the menu surfaces it. Prompting from a background path
+                // in a menu bar app is not safe: with no active app to own it, the modal
+                // is not reliably shown and runModal() hands back its default button —
+                // which silently installed an update nobody agreed to.
+                if silent {
+                    UpdateAvailability.shared.pending = release.version
+                    Diagnostics.note("update \(release.version) available; surfaced in the menu")
+                    return
+                }
+
+                let choice = confirmInstall(
+                    newVersion: release.version,
+                    current: current,
+                    allowSkip: UpdateAvailability.shared.pending == release.version
+                )
+                Diagnostics.note("prompt returned: \(choice)")
+                switch choice {
                 case .cancel:
                     return
                 case .skip:
                     AppSettings.shared.skippedUpdateVersion = release.version
+                    UpdateAvailability.shared.pending = nil
                     return
                 case .install:
                     break
@@ -252,13 +271,29 @@ enum UpdateController {
 
     // MARK: - UI
 
-    private enum ConfirmChoice {
+    private enum ConfirmChoice: CustomStringConvertible {
+        var description: String {
+            switch self {
+            case .install: "install"
+            case .cancel: "cancel"
+            case .skip: "skip"
+            }
+        }
+
         case install
         case cancel
         case skip
     }
 
     private static func confirmInstall(newVersion: String, current: String, allowSkip: Bool) -> ConfirmChoice {
+        // An accessory app has no Dock presence, and a modal it puts up cannot reliably
+        // take focus — runModal() then returns its default button without ever showing
+        // anything. Becoming a regular app for the duration gives the alert something to
+        // belong to; the policy is restored either way.
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
+
         let alert = NSAlert()
         alert.messageText = "Update to version \(newVersion)?"
         alert.informativeText = """

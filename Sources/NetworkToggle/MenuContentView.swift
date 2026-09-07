@@ -9,6 +9,7 @@ struct MenuContentView: View {
 
     @Environment(\.openSettings) private var openSettings
     @State private var settings = AppSettings.shared
+    @State private var updates = UpdateAvailability.shared
 
     /// Optimistic copy of the order while a drag is being committed, so rows do not snap
     /// back for the moment between the drop and the configuration agent catching up.
@@ -191,10 +192,17 @@ struct MenuContentView: View {
                 }
             }
 
-            MenuRowButton(title: "Check for Updates…", systemImage: "arrow.down.circle") {
-                UpdateController.checkForUpdates()
+            if let pending = updates.pending {
+                MenuRowButton(title: "Update to \(pending)…", systemImage: "arrow.down.circle.fill") {
+                    UpdateController.checkForUpdates()
+                }
+                .help("A newer release is available. Downloading and installing it needs your confirmation.")
+            } else {
+                MenuRowButton(title: "Check for Updates…", systemImage: "arrow.down.circle") {
+                    UpdateController.checkForUpdates()
+                }
+                .help("Download and install the latest release from GitHub, then restart.")
             }
-            .help("Download and install the latest release from GitHub, then restart.")
 
             MenuRowButton(title: "Settings…", systemImage: "gearshape") {
                 openSettings()
