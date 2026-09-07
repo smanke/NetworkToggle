@@ -21,25 +21,19 @@ struct IconGenerator {
             ]
         )?.draw(in: tile, angle: -90)
 
-        let plugRect = NSRect(x: size * 0.17, y: size * 0.26, width: size * 0.66, height: size * 0.48)
-        let lineWidth = size * 0.05
+        let socketRect = NSRect(x: size * 0.24, y: size * 0.24, width: size * 0.52, height: size * 0.46)
+        let lineWidth = size * 0.030
 
-        // The plug is rendered into its own transparent layer and then composited. The
-        // pins are knocked out of that layer, and destinationOut erases to transparent —
-        // done directly on the tile it would take the gradient with it.
-        let plug = NSImage(size: NSSize(width: size, height: size))
-        plug.lockFocus()
-        let (outline, pins) = ConnectorShape.path(in: plugRect, lineWidth: lineWidth)
+        // Line art, matching the reference: the socket outline with the eight contacts
+        // drawn as an outlined block rather than a solid one.
+        let (outline, contacts, dividers) = ConnectorShape.path(in: socketRect, lineWidth: lineWidth)
         NSColor.white.set()
-        outline.fill()
-        NSGraphicsContext.current?.compositingOperation = .destinationOut
-        pins.lineWidth = lineWidth * 0.62
-        pins.lineCapStyle = .round
-        pins.stroke()
-        NSGraphicsContext.current?.compositingOperation = .sourceOver
-        plug.unlockFocus()
-
-        plug.draw(in: rect)
+        for stroke in [outline, contacts, dividers] {
+            stroke.lineWidth = lineWidth
+            stroke.lineJoinStyle = .round
+            stroke.lineCapStyle = .round
+            stroke.stroke()
+        }
 
         image.unlockFocus()
 

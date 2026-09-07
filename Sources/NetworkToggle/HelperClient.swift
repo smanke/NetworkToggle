@@ -72,15 +72,52 @@ final class HelperClient {
                           + "macOS only grants privileged helpers to apps installed there.")
             return
         }
+        // Registering something already registered throws EPERM ("Operation not
+        // permitted"), which reads like a refusal and sends people hunting for a
+        // permissions problem that does not exist. The first click registers and leaves
+        // the service awaiting approval; a second click must not call register() again.
+        refreshState()
+        switch state {
+        case .ready:
+            return
+        case .requiresApproval:
+            Diagnostics.note("install() skipped: already registered, awaiting approval")
+            openLoginItemsSettings()
+            return
+        case .notInstalled, .failed:
+            break
+        }
+
         do {
             try daemon.register()
             log.info("Helper registered")
         } catch {
-            log.error("Helper registration failed: \(error.localizedDescription, privacy: .public)")
-            state = .failed(error.localizedDescription)
+            let nsError = error as NSError
+            Diagnostics.note("register() failed: domain=\(nsError.domain) code=\(nsError.code) "
+                             + "desc=\(nsError.localizedDescription) info=\(nsError.userInfo)")
+            log.error("Helper registration failed: \(nsError.domain) \(nsError.code)")
+            state = .failed(Self.explain(nsError))
+            // Approval can still be granted from System Settings after a refusal, so the
+            // state is re-read rather than left pinned to the failure.
+            refreshState()
             return
         }
         refreshState()
+    }
+
+    /// Turns the terse errors SMAppService reports into something that says what to do.
+    /// "Operation not permitted" on its own sends people looking in the wrong place.
+    private static func explain(_ error: NSError) -> String {
+        switch (error.domain, error.code) {
+        case (NSOSStatusErrorDomain, 1), (NSPOSIXErrorDomain, 1):
+            return "macOS refused to register the helper (Operation not permitted). "
+                 + "Open Login Items & Extensions and allow NetworkToggle, then reopen this menu."
+        case (_, 1):
+            return "macOS refused to register the helper. Open Login Items & Extensions, "
+                 + "allow NetworkToggle, then reopen this menu."
+        default:
+            return "\(error.localizedDescription) (\(error.domain) \(error.code))"
+        }
     }
 
     func openLoginItemsSettings() {

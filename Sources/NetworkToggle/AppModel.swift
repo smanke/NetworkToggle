@@ -15,6 +15,7 @@ final class AppModel {
     private(set) var controller: SwitchController!
 
     @ObservationIgnored private var previewWindow: NSWindow?
+    @ObservationIgnored private var helperStateTimer: Task<Void, Never>?
 
     init() {
         controller = SwitchController(monitor: monitor, helper: helper)
@@ -23,6 +24,37 @@ final class AppModel {
         openPreviewWindowIfRequested()
         scheduleLaunchUpdateCheck()
         retireStaleHelper()
+        startHelperStateWatch()
+    }
+
+    /// Approval for a privileged helper is granted outside the app — in System Settings,
+    /// possibly minutes after the request — and SMAppService has no change notification.
+    /// Without this poll the setup card stays on screen forever after the user has
+    /// already allowed it, which looks exactly like the app being broken.
+    private func startHelperStateWatch() {
+        helperStateTimer?.cancel()
+        helperStateTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                self.helper.refreshState()
+                // Once it is ready there is nothing left to watch for; a helper that is
+                // later removed re-arms the watch through refreshHelperState().
+                if self.helper.state.isReady {
+                    self.helperStateTimer = nil
+                    return
+                }
+            }
+        }
+    }
+
+    /// Called when the menu opens, so the state is current the moment it is looked at
+    /// rather than up to one poll interval stale.
+    func refreshHelperState() {
+        helper.refreshState()
+        if !helper.state.isReady, helperStateTimer == nil {
+            startHelperStateWatch()
+        }
     }
 
     /// Deferred so startup is not waiting on the network, and silent unless there is

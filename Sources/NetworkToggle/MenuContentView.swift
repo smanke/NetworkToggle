@@ -5,6 +5,7 @@ struct MenuContentView: View {
     let monitor: NetworkMonitor
     let helper: HelperClient
     let controller: SwitchController
+    var onAppear: () -> Void = {}
 
     @Environment(\.openSettings) private var openSettings
     @State private var settings = AppSettings.shared
@@ -52,6 +53,12 @@ struct MenuContentView: View {
         }
         .padding(.vertical, 12)
         .frame(width: 340)
+        .onAppear {
+            // Opening the menu is the moment the state has to be right: approval may
+            // have been granted in System Settings since it was last read.
+            onAppear()
+            monitor.refresh()
+        }
         .onChange(of: monitor.statuses.map(\.id)) { _, newValue in
             if draftOrder.map(Set.init) != Set(newValue) { draftOrder = nil }
         }
@@ -415,8 +422,12 @@ struct HelperSetupCard: View {
                 Button("Open Login Items settings") { helper.openLoginItemsSettings() }
                     .buttonStyle(.glassProminent)
             case .notInstalled, .failed:
-                Button("Install helper") { helper.install() }
-                    .buttonStyle(.glassProminent)
+                HStack {
+                    Button("Install helper") { helper.install() }
+                        .buttonStyle(.glassProminent)
+                    Button("Open Login Items") { helper.openLoginItemsSettings() }
+                        .buttonStyle(.glass)
+                }
             case .ready:
                 EmptyView()
             }

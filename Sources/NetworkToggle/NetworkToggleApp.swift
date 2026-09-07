@@ -7,7 +7,12 @@ struct NetworkToggleApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView(monitor: model.monitor, helper: model.helper, controller: model.controller)
+            MenuContentView(
+                monitor: model.monitor,
+                helper: model.helper,
+                controller: model.controller,
+                onAppear: { model.refreshHelperState() }
+            )
         } label: {
             MenuBarLabel(monitor: model.monitor)
         }

@@ -1,17 +1,22 @@
 import AppKit
 
-/// The RJ45 plug on the end of an Ethernet cable, drawn as a path so it renders crisply
+/// The RJ45 socket seen head-on: the wide contact block across the top and the stepped
+/// keyway that the plug's latch drops into below. Drawn as a path so it renders crisply
 /// at 16pt in the menu bar and at 1024px for the app icon from one definition.
 ///
 /// SF Symbols has no RJ45 glyph — `cable.connector` is a Thunderbolt-style oval — so
-/// this is hand-drawn. The silhouette is traced as a single outline rather than as a
-/// body plus a separate latch: two overlapping subpaths leave a seam across the join
-/// when stroked, and the latch then reads as a handle sitting on a basket.
+/// this is hand-drawn. The face-on socket is the recognisable Ethernet mark; a plug in
+/// profile reads as a shopping basket unless it is carrying a lot of detail that a menu
+/// bar cannot show.
 public enum ConnectorShape {
 
-    /// The plug's outline and its contact pins, sized to `rect`. Coordinates are
-    /// proportions of the rect, so one construction serves every size.
-    public static func path(in rect: NSRect, lineWidth: CGFloat) -> (outline: NSBezierPath, pins: NSBezierPath) {
+    /// The socket's outline, its contact block, and the dividers between the eight
+    /// contacts. Coordinates are proportions of `rect`, so one construction serves every
+    /// size, and callers take only the pieces that stay legible at theirs.
+    public static func path(
+        in rect: NSRect,
+        lineWidth: CGFloat
+    ) -> (outline: NSBezierPath, contacts: NSBezierPath, dividers: NSBezierPath) {
         let inset = lineWidth / 2
         let inner = rect.insetBy(dx: inset, dy: inset)
 
@@ -19,22 +24,21 @@ public enum ConnectorShape {
             NSPoint(x: inner.minX + inner.width * x, y: inner.minY + inner.height * y)
         }
 
-        // Traced as one closed outline: the cable stub at the bottom, out to the body,
-        // around the latch that clicks into the socket, and back down. The stub matters —
-        // without it a body-plus-latch silhouette reads as a shopping basket.
+        // Traced clockwise from the bottom-left of the keyway tab: up the two steps, out
+        // to the full width of the body, across the top, and back down the mirror image.
         let corners: [(NSPoint, CGFloat)] = [
-            (point(0.43, 0.00), 0.03),   // cable, bottom-left
-            (point(0.43, 0.22), 0.03),   // cable meets the body
-            (point(0.00, 0.22), 0.08),   // body, bottom-left
-            (point(0.00, 0.70), 0.08),   // body, top-left
-            (point(0.34, 0.70), 0.04),   // latch shoulder, left
-            (point(0.39, 1.00), 0.04),   // latch tip, left
-            (point(0.61, 1.00), 0.04),   // latch tip, right
-            (point(0.66, 0.70), 0.04),   // latch shoulder, right
-            (point(1.00, 0.70), 0.08),   // body, top-right
-            (point(1.00, 0.22), 0.08),   // body, bottom-right
-            (point(0.57, 0.22), 0.03),   // cable meets the body
-            (point(0.57, 0.00), 0.03),   // cable, bottom-right
+            (point(0.31, 0.00), 0.03),
+            (point(0.31, 0.15), 0.03),
+            (point(0.16, 0.15), 0.03),
+            (point(0.16, 0.32), 0.03),
+            (point(0.00, 0.32), 0.06),
+            (point(0.00, 1.00), 0.10),
+            (point(1.00, 1.00), 0.10),
+            (point(1.00, 0.32), 0.06),
+            (point(0.84, 0.32), 0.03),
+            (point(0.84, 0.15), 0.03),
+            (point(0.69, 0.15), 0.03),
+            (point(0.69, 0.00), 0.03),
         ]
 
         let outline = NSBezierPath()
@@ -43,24 +47,34 @@ public enum ConnectorShape {
         for index in 1...corners.count {
             let current = corners[index % corners.count]
             let next = corners[(index + 1) % corners.count]
-            outline.appendArc(
-                from: current.0,
-                to: next.0,
-                radius: current.1 * radiusScale
-            )
+            outline.appendArc(from: current.0, to: next.0, radius: current.1 * radiusScale)
         }
         outline.close()
 
-        // Four contacts as short stubs below the top edge of the face. Running them the
-        // full height of the body turns the plug into a basket; eight would be accurate
-        // and illegible at menu bar size.
-        let pins = NSBezierPath()
-        for x in [CGFloat(0.18), 0.39, 0.61, 0.82] {
-            pins.move(to: point(x, 0.61))
-            pins.line(to: point(x, 0.47))
+        // The contact block sits just inside the top edge.
+        let blockLeft: CGFloat = 0.11
+        let blockRight: CGFloat = 0.89
+        let contacts = NSBezierPath(
+            roundedRect: NSRect(
+                x: point(blockLeft, 0).x,
+                y: point(0, 0.63).y,
+                width: (blockRight - blockLeft) * inner.width,
+                height: 0.25 * inner.height
+            ),
+            xRadius: 0.02 * radiusScale,
+            yRadius: 0.02 * radiusScale
+        )
+
+        // Seven dividers make the eight contacts of an 8P8C jack.
+        let dividers = NSBezierPath()
+        let step = (blockRight - blockLeft) / 8
+        for index in 1..<8 {
+            let x = blockLeft + step * CGFloat(index)
+            dividers.move(to: point(x, 0.63))
+            dividers.line(to: point(x, 0.88))
         }
 
-        return (outline, pins)
+        return (outline, contacts, dividers)
     }
 
     private static func midpoint(_ a: NSPoint, _ b: NSPoint) -> NSPoint {
@@ -70,35 +84,40 @@ public enum ConnectorShape {
     /// A menu bar image. Template images let macOS handle light, dark and the inverted
     /// look while a menu is open, so no colours are chosen here.
     ///
-    /// The contact pins are deliberately omitted at this size: at 18x16 they collide
-    /// with the outline and the glyph turns to mush. The silhouette — latch, wide body,
-    /// cable stub — is distinctive on its own.
+    /// The eight contact dividers are dropped at this size — at 18x16 they are under a
+    /// pixel apart and turn the block into a grey smear. The socket silhouette plus a
+    /// solid contact bar keeps the mark readable.
     ///
     /// - Parameters:
     ///   - filled: solid when a wired connection is carrying traffic, outlined when it
     ///     is not. Weight is readable at a glance; two similar glyphs are not.
     ///   - badged: the attention dot shown when a wired link is sitting idle. Placed
-    ///     bottom-right, clear of the latch.
+    ///     bottom-right, clear of the keyway.
     ///   - slashed: struck through when nothing is connected.
     public static func menuBarImage(filled: Bool, badged: Bool = false, slashed: Bool = false) -> NSImage {
         let size = NSSize(width: 18, height: 16)
         let image = NSImage(size: size, flipped: false) { bounds in
-            let lineWidth: CGFloat = 1.5
-            let plugRect = NSRect(x: 1, y: 2, width: 16, height: 12)
-            let (outline, _) = path(in: plugRect, lineWidth: lineWidth)
+            let lineWidth: CGFloat = 1.3
+            let socketRect = NSRect(x: 2, y: 2, width: 14, height: 12)
+            let (outline, contacts, _) = path(in: socketRect, lineWidth: lineWidth)
 
             NSColor.black.set()
 
             if filled {
                 outline.fill()
+                // Knock the contact block back out of the solid body.
+                NSGraphicsContext.current?.compositingOperation = .destinationOut
+                contacts.fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
             } else {
                 outline.lineWidth = lineWidth
                 outline.lineJoinStyle = .round
                 outline.stroke()
+                contacts.fill()
             }
 
             if badged {
-                // Clear a ring first so the dot stays distinct from the plug beneath it.
+                // Clear a ring first so the dot stays distinct from the socket beneath.
                 NSGraphicsContext.current?.compositingOperation = .destinationOut
                 NSBezierPath(ovalIn: NSRect(x: bounds.maxX - 7.5, y: bounds.minY - 0.5, width: 8, height: 8)).fill()
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
