@@ -13,7 +13,12 @@ struct ServiceStatus: Identifiable, Hashable {
     var ipv4: String?
     var router: String?
     var speedMbps: Int?
+    /// Carrying the machine's traffic. With a full-tunnel VPN up, macOS names the tunnel
+    /// as primary; this stays true for the physical connection underneath it, because
+    /// that is still the one doing the work.
     var isPrimary: Bool
+    /// The VPN's encrypted traffic leaves through this connection.
+    var carriesVPN = false
 
     var id: String { service.id }
     var name: String { service.name }
@@ -39,11 +44,27 @@ struct ServiceStatus: Identifiable, Hashable {
     }
 }
 
+/// A VPN tunnel and the physical connection it rides on.
+struct VPNStatus: Hashable {
+    let serviceID: String
+    let name: String
+    let tunnelInterface: String
+    let tunnelAddress: String?
+    let serverAddress: String?
+    /// BSD name of the physical interface carrying the tunnel, when it can be determined.
+    let carrierBSDName: String?
+    /// True for a full tunnel, where macOS routes everything through the VPN.
+    let isPrimary: Bool
+}
+
 @Observable
 @MainActor
 final class NetworkMonitor {
     private(set) var statuses: [ServiceStatus] = []
     private(set) var primaryServiceID: String?
+    private(set) var vpn: VPNStatus?
+
+    @ObservationIgnored private var vpnNames: [String: String] = [:]
 
     private var store: SCDynamicStore?
     private var runLoopSource: CFRunLoopSource?
@@ -59,6 +80,7 @@ final class NetworkMonitor {
     private var previouslyUsableWired: Set<String> = []
 
     var primary: ServiceStatus? { statuses.first { $0.isPrimary } }
+    var vpnCarrier: ServiceStatus? { statuses.first { $0.carriesVPN } }
     var wiFi: ServiceStatus? { statuses.first { $0.service.isWiFi } }
     var idleWired: [ServiceStatus] { statuses.filter(\.isIdleWired) }
 
@@ -172,12 +194,121 @@ final class NetworkMonitor {
                 speedMbps: service.bsdName.flatMap {
                     LinkSpeed.mbps(forBSDName: $0, isWiFi: service.isWiFi)
                 },
-                isPrimary: service.id == primaryService
+                // A tunnel is never the carrier, even when it is the service macOS names.
+                isPrimary: service.id == primaryService && !service.isTunnel
             )
         }
 
+        applyVPNState(store: store, services: services, primaryService: primaryService)
+
         detectNewServices(services)
         detectWiredArrival()
+    }
+
+    // MARK: - VPN
+
+    /// Finds an active tunnel and re-points "primary" at the physical connection under it.
+    ///
+    /// Without this, a full-tunnel VPN makes macOS report the tunnel's own service as
+    /// primary. That service is not in the network configuration — NetworkExtension VPNs
+    /// publish it under a session UUID — so no listed connection matched, the app decided
+    /// nothing was connected, and it offered to "switch" to the Ethernet link that was
+    /// already carrying the VPN.
+    private func applyVPNState(store: SCDynamicStore?, services: [NetworkServiceInfo], primaryService: String?) {
+        guard let store,
+              let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Service/[^/]+/IPv4" as CFString) as? [String]
+        else {
+            vpn = nil
+            return
+        }
+
+        let configured = Dictionary(uniqueKeysWithValues: services.map { ($0.id, $0) })
+
+        struct Candidate {
+            let serviceID: String
+            let state: [String: Any]
+            let interface: String
+        }
+        let candidates: [Candidate] = keys.compactMap { key in
+            let parts = key.split(separator: "/")
+            guard parts.count == 5,
+                  let state = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
+                  let interface = state["InterfaceName"] as? String
+            else { return nil }
+            let serviceID = String(parts[3])
+            let isTunnel = state["ServerAddress"] != nil
+                || NetworkServiceInfo.isTunnelInterface(interface)
+                || configured[serviceID]?.isTunnel == true
+            return isTunnel ? Candidate(serviceID: serviceID, state: state, interface: interface) : nil
+        }
+
+        // The one routing everything wins; otherwise one that names a server is a real VPN
+        // rather than an incidental utun from some other system component.
+        guard let chosen = candidates.first(where: { $0.serviceID == primaryService })
+                ?? candidates.first(where: { $0.state["ServerAddress"] != nil })
+                ?? candidates.first
+        else {
+            if vpn != nil { log.info("VPN down") }
+            vpn = nil
+            return
+        }
+
+        let server = chosen.state["ServerAddress"] as? String
+        let isPrimary = chosen.serviceID == primaryService
+        let carrier = carrierInterface(for: chosen.state, server: server, isPrimary: isPrimary)
+
+        let name: String
+        if let configuredName = configured[chosen.serviceID]?.name {
+            name = configuredName
+        } else if let cached = vpnNames[chosen.serviceID] {
+            name = cached
+        } else {
+            name = VPNNameResolver.enabledVPNApplicationName() ?? "VPN"
+            vpnNames[chosen.serviceID] = name
+        }
+
+        let status = VPNStatus(
+            serviceID: chosen.serviceID,
+            name: name,
+            tunnelInterface: chosen.interface,
+            tunnelAddress: (chosen.state["Addresses"] as? [String])?.first,
+            serverAddress: server,
+            carrierBSDName: carrier,
+            isPrimary: isPrimary
+        )
+        if status != vpn {
+            log.info("VPN \(name, privacy: .public) on \(chosen.interface, privacy: .public) via \(carrier ?? "unknown", privacy: .public)")
+            Diagnostics.note("vpn=\(name) tunnel=\(chosen.interface) server=\(server ?? "-") carrier=\(carrier ?? "unknown") full=\(isPrimary)")
+        }
+        vpn = status
+
+        for index in statuses.indices {
+            let carries = carrier != nil && statuses[index].bsdName == carrier
+            statuses[index].carriesVPN = carries
+            // With a full tunnel the carrier is what is actually in use. With a split
+            // tunnel macOS still names a physical primary, and that answer stands.
+            if isPrimary { statuses[index].isPrimary = carries }
+        }
+    }
+
+    /// Which physical interface the tunnel's own packets leave through.
+    ///
+    /// A NetworkExtension VPN excludes its server from the tunnel and pins that route to
+    /// an interface, which is the authoritative answer — confirmed against the kernel's
+    /// host route and the provider's live socket. Configd-managed VPNs publish no such
+    /// entry, and for those the server is reached through the highest-ranked working
+    /// physical connection, so that is used instead.
+    private func carrierInterface(for state: [String: Any], server: String?, isPrimary: Bool) -> String? {
+        if let server,
+           let excluded = state["ExcludedRoutes"] as? [[String: Any]],
+           let route = excluded.first(where: { $0["DestinationAddress"] as? String == server }),
+           let interface = route["InterfaceName"] as? String {
+            return interface
+        }
+        if !isPrimary, let physical = statuses.first(where: \.isPrimary) {
+            return physical.bsdName
+        }
+        return statuses.first { !$0.service.isTunnel && $0.isUsable }?.bsdName
     }
 
     private func detectNewServices(_ services: [NetworkServiceInfo]) {

@@ -43,8 +43,10 @@ struct MenuBarLabel: View {
 
     private var accessibilityDescription: String {
         guard let primary = monitor.primary else { return "No network connection" }
-        if monitor.idleWired.isEmpty { return "Network: \(primary.name)" }
-        return "Network: \(primary.name). A wired connection is available."
+        var description = "Network: \(primary.name)"
+        if let vpn = monitor.vpn { description += ", through \(vpn.name)" }
+        if !monitor.idleWired.isEmpty { description += ". A wired connection is available." }
+        return description
     }
 
     var body: some View {

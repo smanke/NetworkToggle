@@ -17,6 +17,25 @@ struct MenuContentView: View {
 
     @State private var showDisconnected = false
 
+    /// The row being dragged, and how far. Reordering tracks the mouse directly rather
+    /// than using List's built-in move: that rides an AppKit table drag session, which
+    /// the menu bar panel never delivers — rows could be dragged in a normal window and
+    /// did nothing at all in the actual menu.
+    @State private var draggingID: String?
+    @State private var dragOffset: CGFloat = 0
+    private let rowHeight: CGFloat = 46
+
+    /// A change held back because it would pull the physical connection out from under a
+    /// running VPN. Measured on NordVPN: moving Wi-Fi above the Ethernet link carrying the
+    /// tunnel re-routed its server but its socket stayed bound to the Ethernet address,
+    /// and the tunnel carried nothing until the order was put back.
+    @State private var pendingChange: PendingChange?
+
+    private enum PendingChange {
+        case order([String])
+        case switchTo(ServiceStatus, force: Bool)
+    }
+
     /// A Mac lists more services than System Settings shows — the internal USB4 ports
     /// alone add three that will never carry traffic. Hiding them by default keeps the
     /// connection you are actually using at the top of the popover.
@@ -34,7 +53,7 @@ struct MenuContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ActiveConnectionCard(status: monitor.primary)
+            ActiveConnectionCard(status: monitor.primary, vpn: monitor.vpn, carrier: monitor.vpnCarrier)
 
             // The list is readable without any privilege, so it stays visible during
             // setup — seeing the order is half of what this app is for. Only the
@@ -71,23 +90,37 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             SectionHeader("Connection priority")
 
-            List {
-                ForEach(visibleRows) { status in
-                    ServiceRow(status: status, canSwitch: helper.state.isReady) {
-                        Task { await controller.switchTo(status, force: false) }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, status in
+                        ServiceRow(status: status, canSwitch: helper.state.isReady) {
+                            request(.switchTo(status, force: false))
+                        }
+                        .frame(height: rowHeight)
+                        .offset(y: offset(forRowAt: index, id: status.id))
+                        .zIndex(draggingID == status.id ? 1 : 0)
+                        .gesture(reorderGesture(for: status, at: index), including: helper.state.isReady ? .all : .subviews)
+                        .contextMenu {
+                            if helper.state.isReady, index > 0 {
+                                Button("Move to Top") { move(from: IndexSet(integer: index), to: 0) }
+                            }
+                        }
                     }
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
-                    .listRowBackground(Color.clear)
                 }
-                .onMove(perform: move)
-                .moveDisabled(!helper.state.isReady)
+                .animation(.snappy(duration: 0.2), value: draggingID == nil ? 0 : projectedIndex)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .scrollDisabled(visibleRows.count <= 7)
-            .frame(height: CGFloat(max(1, min(visibleRows.count, 7))) * 46)
+            .scrollDisabled(visibleRows.count <= 7 || draggingID != nil)
+            .frame(height: CGFloat(max(1, min(visibleRows.count, 7))) * rowHeight)
             .padding(.horizontal, 8)
+
+            if let pendingChange {
+                VPNInterruptionNotice(
+                    vpnName: monitor.vpn?.name ?? "The VPN",
+                    carrierName: monitor.vpnCarrier?.name ?? "its current connection",
+                    onConfirm: { commit(pendingChange); self.pendingChange = nil },
+                    onCancel: { self.pendingChange = nil; draftOrder = nil }
+                )
+            }
 
             if hiddenCount > 0 || showDisconnected {
                 Button {
@@ -111,6 +144,7 @@ struct MenuContentView: View {
                  : "macOS uses the topmost connection that is working. Finish setup to reorder.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 14)
         }
     }
@@ -123,6 +157,7 @@ struct MenuContentView: View {
     /// position it already held. The result is still a permutation of the full order,
     /// which is what the helper insists on.
     private func move(from offsets: IndexSet, to destination: Int) {
+        Diagnostics.note("move: offsets=\(Array(offsets)) destination=\(destination) visible=\(visibleRows.map(\.name))")
         var visibleIDs = visibleRows.map(\.id)
         visibleIDs.move(fromOffsets: offsets, toOffset: destination)
 
@@ -133,8 +168,78 @@ struct MenuContentView: View {
             if let id = next.next() { full[index] = id }
         }
 
-        draftOrder = full
-        Task { await controller.applyOrder(full) }
+        request(.order(full))
+    }
+
+    // MARK: - Drag tracking
+
+    private func reorderGesture(for status: ServiceStatus, at index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                draggingID = status.id
+                dragOffset = value.translation.height
+            }
+            .onEnded { _ in
+                let destination = projectedIndex
+                draggingID = nil
+                dragOffset = 0
+                guard destination != index else { return }
+                // move(fromOffsets:toOffset:) takes an insertion point in the original
+                // array, which sits one past the target when moving downwards.
+                move(from: IndexSet(integer: index), to: destination > index ? destination + 1 : destination)
+            }
+    }
+
+    /// Where the dragged row would land if released now.
+    private var projectedIndex: Int {
+        guard let draggingID, let from = visibleRows.firstIndex(where: { $0.id == draggingID }) else { return 0 }
+        let shift = Int((dragOffset / rowHeight).rounded())
+        return min(max(from + shift, 0), visibleRows.count - 1)
+    }
+
+    /// The dragged row follows the pointer; the rows it passes step aside to show the gap.
+    private func offset(forRowAt index: Int, id: String) -> CGFloat {
+        guard let draggingID, let from = visibleRows.firstIndex(where: { $0.id == draggingID }) else { return 0 }
+        if id == draggingID { return dragOffset }
+        let to = projectedIndex
+        if from < to, index > from, index <= to { return -rowHeight }
+        if from > to, index >= to, index < from { return rowHeight }
+        return 0
+    }
+
+    // MARK: - VPN guard
+
+    private func request(_ change: PendingChange) {
+        if interruptsVPN(change) {
+            if case let .order(ids) = change { draftOrder = ids }
+            pendingChange = change
+        } else {
+            commit(change)
+        }
+    }
+
+    private func commit(_ change: PendingChange) {
+        switch change {
+        case let .order(ids):
+            draftOrder = ids
+            Task { await controller.applyOrder(ids) }
+        case let .switchTo(status, force):
+            Task { await controller.switchTo(status, force: force) }
+        }
+    }
+
+    /// Whether a change would move traffic off the physical connection a full-tunnel VPN
+    /// is riding on. A split tunnel keeps its own route and is left alone.
+    private func interruptsVPN(_ change: PendingChange) -> Bool {
+        guard let vpn = monitor.vpn, vpn.isPrimary, let carrier = vpn.carrierBSDName else { return false }
+        switch change {
+        case let .switchTo(status, _):
+            return status.bsdName != carrier
+        case let .order(ids):
+            let byID = Dictionary(uniqueKeysWithValues: monitor.statuses.map { ($0.id, $0) })
+            let newTop = ids.lazy.compactMap { byID[$0] }.first { $0.isUsable && !$0.service.isTunnel }
+            return newTop.map { $0.bsdName != carrier } ?? false
+        }
     }
 
     // MARK: - Actions
@@ -144,7 +249,7 @@ struct MenuContentView: View {
         let target = monitor.idleWired.first
         VStack(spacing: 6) {
             Button {
-                if let target { Task { await controller.switchTo(target, force: false) } }
+                if let target { request(.switchTo(target, force: false)) }
             } label: {
                 Label(
                     target.map { "Switch to \($0.name)" } ?? "No idle wired connection",
@@ -156,11 +261,13 @@ struct MenuContentView: View {
             .disabled(target == nil)
 
             Button {
-                if let target { Task { await controller.switchTo(target, force: true) } }
+                if let target { request(.switchTo(target, force: true)) }
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Label("Switch and force reconnect", systemImage: "bolt")
-                    Text("Bounces Wi-Fi so open connections and VPNs move too")
+                    // Not "and VPNs": measured on NordVPN, moving its connection strands the
+                    // tunnel rather than carrying it across.
+                    Text("Bounces Wi-Fi so open connections move too")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -243,29 +350,46 @@ struct SectionHeader: View {
 
 struct ActiveConnectionCard: View {
     let status: ServiceStatus?
+    var vpn: VPNStatus? = nil
+    var carrier: ServiceStatus? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionHeader("Active connection")
 
-            HStack(spacing: 10) {
-                Image(systemName: status?.service.isWiFi == true ? "wifi" : "cable.connector")
-                    .font(.system(size: 18))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(status == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                    .frame(width: 22)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(status?.name ?? "Not connected")
-                        .fontWeight(.medium)
-                    if let status {
-                        Text(detail(for: status))
+            VStack(alignment: .leading, spacing: 8) {
+                if let vpn {
+                    // The tunnel first, since that is where traffic appears to go, then the
+                    // physical connection it rides on — which is the part this app changes.
+                    ConnectionLine(
+                        systemImage: "lock.shield",
+                        title: vpn.name,
+                        detail: [vpn.tunnelAddress, vpn.serverAddress.map { "server \($0)" }, vpn.tunnelInterface]
+                            .compactMap { $0 }.joined(separator: " · "),
+                        isActive: true
+                    )
+                    if let carrier {
+                        ConnectionLine(
+                            systemImage: carrier.service.isWiFi ? "wifi" : "cable.connector",
+                            title: "over \(carrier.name)",
+                            detail: detail(for: carrier),
+                            isActive: true
+                        )
+                        .padding(.leading, 14)
+                    } else {
+                        Text("Can’t tell which connection the VPN is using.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                            .padding(.leading, 32)
                     }
+                } else {
+                    ConnectionLine(
+                        systemImage: status?.service.isWiFi == true ? "wifi" : "cable.connector",
+                        title: status?.name ?? "Not connected",
+                        detail: status.map(detail(for:)),
+                        isActive: status != nil
+                    )
                 }
-                Spacer(minLength: 0)
             }
             .padding(10)
             .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
@@ -277,6 +401,66 @@ struct ActiveConnectionCard: View {
         [status.ipv4, status.speedLabel, status.bsdName]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+}
+
+private struct ConnectionLine: View {
+    let systemImage: String
+    let title: String
+    let detail: String?
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct VPNInterruptionNotice: View {
+    let vpnName: String
+    let carrierName: String
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("This will interrupt \(vpnName)", systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .fontWeight(.medium)
+            Text("\(vpnName) is running over \(carrierName). Moving traffic to another connection "
+                 + "stops the tunnel until you disconnect and reconnect \(vpnName).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Change anyway", action: onConfirm)
+                    .buttonStyle(.glassProminent)
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(.glass)
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .padding(.horizontal, 12)
     }
 }
 
@@ -311,7 +495,9 @@ struct ServiceRow: View {
             Spacer(minLength: 4)
 
             if status.isPrimary {
-                Badge(text: "Active", tint: .green)
+                Badge(text: status.carriesVPN ? "Active · VPN" : "Active", tint: .green)
+            } else if status.carriesVPN {
+                Badge(text: "VPN", tint: .green)
             } else if status.isUsable {
                 if isHovering && canSwitch {
                     Button("Use", action: onUse)

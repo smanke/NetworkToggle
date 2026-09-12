@@ -65,6 +65,27 @@ non-link-local address *and* a default router, and then **pings the gateway**. A
 whose uplink is dead presents a fully configured interface; only a reply distinguishes
 it from a working one. No reply means NetworkToggle notifies instead of switching.
 
+## VPNs
+
+With a VPN connected, the menu shows the tunnel and the physical connection underneath
+it — for example **NordVPN, over Thunderbolt Ethernet** — and that connection is the one
+marked **Active · VPN**. Before 1.0.4 a full-tunnel VPN made the app report nothing as
+connected, because macOS names the tunnel itself as the primary service and that service
+is not one you configured.
+
+The carrier is read from the VPN's own routing state: a NetworkExtension VPN excludes its
+server from the tunnel and pins that route to an interface, which is checked against the
+kernel's route and the VPN's live connection. The name comes from the one enabled VPN
+configuration macOS has installed; with several, the menu just says "VPN".
+
+**NetworkToggle will not move a running VPN to a different connection.** Measured with
+NordVPN: putting Wi-Fi above the Ethernet link carrying the tunnel re-routed its server
+within seconds, but the VPN's connection stayed bound to Ethernet's address and the
+tunnel passed no traffic until the order was put back. So any reorder or switch that
+would pull a full-tunnel VPN off its connection asks first. To choose which connection a
+VPN uses, set the order while the VPN is disconnected, or change it and then reconnect
+the VPN.
+
 ## Download
 
 **[Download NetworkToggle (.dmg)](https://github.com/smanke/NetworkToggle/releases/latest/download/NetworkToggle.dmg)** — always the latest release.

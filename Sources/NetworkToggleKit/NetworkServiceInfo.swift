@@ -20,6 +20,24 @@ public struct NetworkServiceInfo: Identifiable, Hashable, Sendable {
             || interfaceType == (kSCNetworkInterfaceTypeBond as String)
     }
 
+    /// A VPN or other tunnel. It rides on a physical connection rather than being one,
+    /// so it must never be mistaken for the connection carrying traffic.
+    public var isTunnel: Bool {
+        let tunnelTypes: Set<String> = [
+            kSCNetworkInterfaceTypeIPSec as String,
+            kSCNetworkInterfaceTypePPP as String,
+            kSCNetworkInterfaceTypeL2TP as String,
+            kSCNetworkInterfaceTypePPTP as String,
+            "VPN",   // NetworkExtension services; the constant is not public
+        ]
+        if let interfaceType, tunnelTypes.contains(interfaceType) { return true }
+        return bsdName.map(NetworkServiceInfo.isTunnelInterface) ?? false
+    }
+
+    public static func isTunnelInterface(_ bsdName: String) -> Bool {
+        bsdName.hasPrefix("utun") || bsdName.hasPrefix("ipsec") || bsdName.hasPrefix("ppp")
+    }
+
     public init(id: String, name: String, bsdName: String?, interfaceType: String?, isEnabled: Bool) {
         self.id = id
         self.name = name

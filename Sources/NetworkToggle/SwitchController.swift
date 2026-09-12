@@ -104,8 +104,10 @@ final class SwitchController {
         defer { busyMessage = nil }
         do {
             try await body()
+            Diagnostics.note("\(message) succeeded")
             monitor.refresh()
         } catch {
+            Diagnostics.note("\(message) failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
             log.error("\(message, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
