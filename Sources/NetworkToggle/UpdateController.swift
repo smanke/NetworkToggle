@@ -285,6 +285,7 @@ enum UpdateController {
         case skip
     }
 
+    @MainActor
     private static func confirmInstall(newVersion: String, current: String, allowSkip: Bool) -> ConfirmChoice {
         // An accessory app has no Dock presence, and a modal it puts up cannot reliably
         // take focus — runModal() then returns its default button without ever showing
@@ -309,15 +310,83 @@ enum UpdateController {
         NetworkToggle will quit and reopen to finish. Your connection order and the \
         privileged helper are not affected.
         """
-        alert.addButton(withTitle: "Update and Restart")
+        // Installing takes a deliberate press of "Update and Restart", never a stray key.
+        //
+        // This app takes keyboard focus when the dialog opens, so a Return the user meant
+        // for another app lands here. When "Update and Restart" was the default button,
+        // that one keystroke installed an update from a dialog nobody had read (reproduced
+        // 2026-09-13). "Not Now" is now first, so it owns Return. "Update and Restart" has
+        // no key equivalent, and InstallConsent keeps it disabled until the dialog has been
+        // on screen and in front for a moment, and records the press itself.
         alert.addButton(withTitle: "Not Now")
+        let install = alert.addButton(withTitle: "Update and Restart")
+        install.keyEquivalent = ""
         if allowSkip { alert.addButton(withTitle: "Skip This Version") }
+        let consent = InstallConsent(button: install, window: alert.window)
+        defer { consent.finish() }
         NSApp.activate(ignoringOtherApps: true)
 
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return .install
-        case .alertThirdButtonReturn where allowSkip: return .skip
-        default: return .cancel
+        let response = alert.runModal()
+        Diagnostics.note("update prompt response=\(response.rawValue) installPressed=\(consent.pressed)")
+        NSLog("NetworkToggle: update prompt response=\(response.rawValue) installPressed=\(consent.pressed)")
+        if consent.pressed { return .install }
+        return response == .alertThirdButtonReturn && allowSkip ? .skip : .cancel
+    }
+
+    /// Makes "Update and Restart" respond only to a deliberate press.
+    ///
+    /// The button starts disabled. It is enabled only after the dialog has been key, visible
+    /// and unobscured, with the app active, for `delay` without a break, and it is disabled
+    /// again the moment any of that stops being true. The press is recorded here rather than
+    /// inferred from runModal's return value, so an install requires this button to have
+    /// actually been pressed while enabled.
+    @MainActor
+    private final class InstallConsent: NSObject {
+        private let button: NSButton
+        private let window: NSWindow
+        private let delay: TimeInterval
+        private var timer: Timer?
+        private var readySince: Date?
+        private(set) var pressed = false
+
+        init(button: NSButton, window: NSWindow, delay: TimeInterval = 1.0) {
+            self.button = button
+            self.window = window
+            self.delay = delay
+            super.init()
+            button.isEnabled = false
+            button.target = self
+            button.action = #selector(installPressed(_:))
+            let timer = Timer(timeInterval: 0.1, target: self, selector: #selector(tick),
+                              userInfo: nil, repeats: true)
+            // Common modes, so it keeps firing inside runModal's modal run loop.
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        }
+
+        @objc private func tick() {
+            let ready = NSApp.isActive && window.isVisible && window.isKeyWindow
+                && window.occlusionState.contains(.visible)
+            if ready {
+                let since = readySince ?? Date()
+                readySince = since
+                button.isEnabled = Date().timeIntervalSince(since) >= delay
+            } else {
+                readySince = nil
+                button.isEnabled = false
+            }
+        }
+
+        @objc private func installPressed(_ sender: NSButton) {
+            guard sender.isEnabled else { return }
+            pressed = true
+            NSApp.stopModal(withCode: .alertSecondButtonReturn)
+        }
+
+        /// Stops the timer, which otherwise keeps this object alive.
+        func finish() {
+            timer?.invalidate()
+            timer = nil
         }
     }
 
