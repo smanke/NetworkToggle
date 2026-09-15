@@ -5,7 +5,18 @@ struct MenuContentView: View {
     let monitor: NetworkMonitor
     let helper: HelperClient
     let controller: SwitchController
+    let meter: ThroughputMeter
     var onAppear: () -> Void = {}
+
+    /// Whether the menu is on screen. Throughput is only ever sampled while it is.
+    @State private var isOpen = false
+
+    /// The physical interface whose throughput the card shows: the link under a VPN when
+    /// one is up, otherwise the active connection — and nothing when there is no live link.
+    private var measuredInterface: String? {
+        guard let connection = monitor.vpnCarrier ?? monitor.primary, connection.linkUp else { return nil }
+        return connection.bsdName
+    }
 
     @Environment(\.openSettings) private var openSettings
     @State private var settings = AppSettings.shared
@@ -53,7 +64,13 @@ struct MenuContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ActiveConnectionCard(status: monitor.primary, vpn: monitor.vpn, carrier: monitor.vpnCarrier)
+            ActiveConnectionCard(
+                status: monitor.primary,
+                vpn: monitor.vpn,
+                carrier: monitor.vpnCarrier,
+                measuring: meter.interface != nil && meter.interface == measuredInterface,
+                throughput: meter.reading
+            )
 
             // The list is readable without any privilege, so it stays visible during
             // setup — seeing the order is half of what this app is for. Only the
@@ -78,6 +95,18 @@ struct MenuContentView: View {
             // have been granted in System Settings since it was last read.
             onAppear()
             monitor.refresh()
+            isOpen = true
+            meter.measure(measuredInterface)
+        }
+        .onDisappear {
+            // Closing the menu stops sampling outright; nothing runs while it is shut.
+            isOpen = false
+            meter.measure(nil)
+        }
+        .onChange(of: measuredInterface) { _, interface in
+            // Follow the connection if it changes while the menu is open — a dock plugged
+            // in, a VPN coming up — and stop if the link goes away.
+            if isOpen { meter.measure(interface) }
         }
         .onChange(of: monitor.statuses.map(\.id)) { _, newValue in
             if draftOrder.map(Set.init) != Set(newValue) { draftOrder = nil }
@@ -352,6 +381,8 @@ struct ActiveConnectionCard: View {
     let status: ServiceStatus?
     var vpn: VPNStatus? = nil
     var carrier: ServiceStatus? = nil
+    var measuring = false
+    var throughput: Throughput? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -376,6 +407,12 @@ struct ActiveConnectionCard: View {
                             isActive: true
                         )
                         .padding(.leading, 14)
+                        if measuring {
+                            // Measured on the physical link, so it includes the VPN's
+                            // own overhead — the real load on the wire.
+                            ThroughputLine(reading: throughput)
+                                .padding(.leading, 46)
+                        }
                     } else {
                         Text("Can’t tell which connection the VPN is using.")
                             .font(.caption)
@@ -389,6 +426,10 @@ struct ActiveConnectionCard: View {
                         detail: status.map(detail(for:)),
                         isActive: status != nil
                     )
+                    if measuring, status != nil {
+                        ThroughputLine(reading: throughput)
+                            .padding(.leading, 32)
+                    }
                 }
             }
             .padding(10)
@@ -401,6 +442,31 @@ struct ActiveConnectionCard: View {
         [status.ipv4, status.speedLabel, status.bsdName]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+}
+
+/// Live download and upload rates. Shows dashes for the first second, before there are
+/// two samples to take a rate from, so the card does not change height when numbers arrive.
+private struct ThroughputLine: View {
+    let reading: Throughput?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            rate("arrow.down", "Download", reading?.downloadBytesPerSecond)
+            rate("arrow.up", "Upload", reading?.uploadBytesPerSecond)
+        }
+        .font(.caption)
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+    }
+
+    private func rate(_ symbol: String, _ label: String, _ bytesPerSecond: Double?) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .imageScale(.small)
+                .accessibilityLabel(label)
+            Text(bytesPerSecond.map(Throughput.megabytesLabel) ?? "— MB/s")
+        }
     }
 }
 

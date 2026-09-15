@@ -12,6 +12,7 @@ import NetworkToggleKit
 final class AppModel {
     let monitor = NetworkMonitor()
     let helper = HelperClient()
+    let meter = ThroughputMeter()
     private(set) var controller: SwitchController!
 
     @ObservationIgnored private var previewWindow: NSWindow?
@@ -96,7 +97,7 @@ final class AppModel {
         )
         window.title = "NetworkToggle Preview"
         window.contentView = NSHostingView(
-            rootView: MenuContentView(monitor: monitor, helper: helper, controller: controller)
+            rootView: MenuContentView(monitor: monitor, helper: helper, controller: controller, meter: meter)
         )
         window.center()
         previewWindow = window

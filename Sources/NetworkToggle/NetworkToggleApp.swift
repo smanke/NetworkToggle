@@ -11,6 +11,7 @@ struct NetworkToggleApp: App {
                 monitor: model.monitor,
                 helper: model.helper,
                 controller: model.controller,
+                meter: model.meter,
                 onAppear: { model.refreshHelperState() }
             )
         } label: {

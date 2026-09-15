@@ -65,6 +65,18 @@ non-link-local address *and* a default router, and then **pings the gateway**. A
 whose uplink is dead presents a fully configured interface; only a reply distinguishes
 it from a working one. No reply means NetworkToggle notifies instead of switching.
 
+## Live throughput
+
+While the menu is open, the active connection shows live download and upload rates in
+megabytes per second (1 MB = 1,000,000 bytes), refreshed every second and lightly
+smoothed. With a VPN connected it measures the physical link underneath, so the figure
+includes the VPN's own overhead — the real load on the wire.
+
+Nothing is sampled while the menu is closed or when there is no active connection. Each
+sample is one kernel query for a single interface's 64-bit byte counters; the 32-bit
+counters from `getifaddrs` would wrap every 4 GiB, roughly every half minute on a busy
+gigabit link.
+
 ## VPNs
 
 With a VPN connected, the menu shows the tunnel and the physical connection underneath

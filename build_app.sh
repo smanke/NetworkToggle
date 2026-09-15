@@ -17,8 +17,30 @@ APP="$BUILD/$APP_NAME.app"
 echo "==> Building universal binaries"
 swift build -c release --arch arm64 --arch x86_64
 
-BIN_DIR="$ROOT/.build/apple/Products/Release"
-[ -x "$BIN_DIR/$APP_NAME" ] || BIN_DIR="$ROOT/.build/release"
+# SwiftPM has put universal builds in different places across toolchains
+# (.build/apple/Products/Release, now .build/release -> out/Products/Release), and an
+# old toolchain's folder stays behind after an upgrade. Preferring one location by name
+# silently packaged a days-old binary inside a freshly versioned bundle — the version
+# number said 1.0.6 while the code was not. Take the newest candidate, and refuse to
+# package it if any source file is newer. (Not "newer than the build started": an
+# up-to-date incremental build rightly leaves its output untouched.)
+BIN_DIR=""
+for candidate in "$ROOT/.build/release" "$ROOT/.build/apple/Products/Release"; do
+  [ -x "$candidate/$APP_NAME" ] || continue
+  if [ -z "$BIN_DIR" ] || [ "$candidate/$APP_NAME" -nt "$BIN_DIR/$APP_NAME" ]; then
+    BIN_DIR="$candidate"
+  fi
+done
+if [ -z "$BIN_DIR" ]; then
+  echo "No built binary found." >&2
+  exit 1
+fi
+NEWER_SOURCE=$(find "$ROOT/Sources" "$ROOT/Package.swift" -newer "$BIN_DIR/$APP_NAME" -type f -print -quit)
+if [ -n "$NEWER_SOURCE" ]; then
+  echo "$BIN_DIR/$APP_NAME is older than $NEWER_SOURCE — refusing to package a stale binary." >&2
+  exit 1
+fi
+echo "    using $BIN_DIR"
 
 echo "==> Assembling bundle"
 rm -rf "$APP"
