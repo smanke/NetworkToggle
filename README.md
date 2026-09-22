@@ -77,6 +77,21 @@ sample is one kernel query for a single interface's 64-bit byte counters; the 32
 counters from `getifaddrs` would wrap every 4 GiB, roughly every half minute on a busy
 gigabit link.
 
+## When a wired connection appears
+
+Plug in a dock while you are on Wi-Fi and NetworkToggle offers the wired connection as a
+notification — **"USB 10/100/1000 LAN is available — Switch from Wi-Fi?"** — with a
+**Switch** button. Clicking the notification itself does the same thing; it is one click
+either way, and the change is undoable from the menu. Settings offers **Ask me** (the
+default), **Switch automatically**, or **Do nothing**.
+
+Before offering anything it waits for the link to settle and checks the gateway actually
+answered on that interface, so a dock whose uplink is dead is never offered. That check
+reads the router's resolved hardware address from the system configuration rather than
+pinging it: ICMP from an ordinary app is dropped in silence without local-network
+permission — verified by sending a ping that never came back while `/sbin/ping` answered
+in 6 ms — so a probe alone would have refused every switch forever.
+
 ## Connections left on Wi-Fi
 
 macOS sends *new* connections over the active connection but never moves existing ones:

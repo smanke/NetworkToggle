@@ -4,11 +4,11 @@ import Foundation
 /// right place for shipping diagnostics, but it drops info-level messages from an
 /// unsigned-for-logging process, which makes it useless while bringing the app up.
 enum Diagnostics {
-    private static let enabled = ProcessInfo.processInfo.environment["NETWORKTOGGLE_DEBUG"] == "1"
+    static let isEnabled = ProcessInfo.processInfo.environment["NETWORKTOGGLE_DEBUG"] == "1"
     private static let path = "/tmp/networktoggle-debug.log"
 
     static func note(_ message: String) {
-        guard enabled else { return }
+        guard isEnabled else { return }
         let line = "\(Date().formatted(date: .omitted, time: .standard)) \(message)\n"
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()

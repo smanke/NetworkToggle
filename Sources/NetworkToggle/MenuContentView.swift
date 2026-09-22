@@ -411,6 +411,12 @@ struct MenuContentView: View {
                 .help("Download and install the latest release from GitHub, then restart.")
             }
 
+            if Diagnostics.isEnabled {
+                MenuRowButton(title: "Simulate wired arrival", systemImage: "ladybug") {
+                    Task { await controller.simulateWiredArrival() }
+                }
+            }
+
             MenuRowButton(title: "Settings…", systemImage: "gearshape") {
                 openSettings()
                 NSApp.activate(ignoringOtherApps: true)
@@ -701,15 +707,17 @@ struct ServiceRow: View {
                 Badge(text: status.carriesVPN ? "Active · VPN" : "Active", tint: .green)
             } else if status.carriesVPN {
                 Badge(text: "VPN", tint: .green)
-            } else if idleConnections > 0, !status.isPrimary {
-                Badge(text: "\(idleConnections) idle", tint: .secondary)
-                    .help("\(idleConnections) connection\(idleConnections == 1 ? "" : "s") opened before "
-                          + "the current one became active are still here, carrying almost nothing.")
             } else if status.isUsable {
+                // Hovering always offers the switch: an idle count must not take the place
+                // of the action, only of the resting label.
                 if isHovering && canSwitch {
                     Button("Use", action: onUse)
                         .buttonStyle(.borderless)
                         .font(.caption)
+                } else if idleConnections > 0 {
+                    Badge(text: "\(idleConnections) idle", tint: .secondary)
+                        .help("\(idleConnections) connection\(idleConnections == 1 ? "" : "s") opened before "
+                              + "the current one became active are still here, carrying almost nothing.")
                 } else {
                     Badge(text: "Ready", tint: .secondary)
                 }

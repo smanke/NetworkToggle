@@ -13,6 +13,9 @@ struct ServiceStatus: Identifiable, Hashable {
     var ipv4: String?
     var router: String?
     var speedMbps: Int?
+    /// macOS resolved the router's hardware address on this interface — proof the gateway
+    /// answered on this link, which is what a dock with a dead uplink cannot do.
+    var gatewayConfirmed = false
     /// Carrying the machine's traffic. With a full-tunnel VPN up, macOS names the tunnel
     /// as primary; this stays true for the physical connection underneath it, because
     /// that is still the one doing the work.
@@ -176,9 +179,13 @@ final class NetworkMonitor {
                 }
             }
 
+            var gatewayConfirmed = false
             if let store {
                 let key = "State:/Network/Service/\(service.id)/IPv4" as CFString
                 if let dict = SCDynamicStoreCopyValue(store, key) as? [String: Any] {
+                    let resolved = (dict["ARPResolvedHardwareAddress"] as? String)?.isEmpty == false
+                    let confirmed = dict["ConfirmedInterfaceName"] as? String
+                    gatewayConfirmed = resolved && (confirmed == nil || confirmed == service.bsdName)
                     // A self-assigned 169.254 address means DHCP never answered. It is an
                     // address, but routing through it breaks everything, so drop it here.
                     ipv4 = (dict["Addresses"] as? [String])?.first { !$0.hasPrefix("169.254.") }
@@ -194,6 +201,7 @@ final class NetworkMonitor {
                 speedMbps: service.bsdName.flatMap {
                     LinkSpeed.mbps(forBSDName: $0, isWiFi: service.isWiFi)
                 },
+                gatewayConfirmed: gatewayConfirmed,
                 // A tunnel is never the carrier, even when it is the service macOS names.
                 isPrimary: service.id == primaryService && !service.isTunnel
             )

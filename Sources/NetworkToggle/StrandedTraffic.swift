@@ -141,7 +141,12 @@ final class StrandedTrafficMonitor {
                         isFileSharing: connections.contains { Self.fileSharingPorts.contains($0.remotePort) }
                     )
                 }
-                .sorted { $0.count != $1.count ? $0.count > $1.count : $0.label < $1.label }
+                // File shares first: when the notice appears because of one, it must not
+                // open by naming a busier web server instead.
+                .sorted {
+                    if $0.isFileSharing != $1.isFileSharing { return $0.isFileSharing }
+                    return $0.count != $1.count ? $0.count > $1.count : $0.label < $1.label
+                }
             result.append(StrandedInterface(bsdName: interface.bsdName, name: interface.name,
                                             isWiFi: interface.isWiFi, peers: peers))
         }

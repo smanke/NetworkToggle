@@ -6,8 +6,26 @@ import Observation
 final class AppSettings {
     static let shared = AppSettings()
 
-    /// Promote a wired connection on its own once it proves usable.
-    var autoSwitch: Bool { didSet { store(autoSwitch, "autoSwitch") } }
+    enum WiredArrival: String, CaseIterable, Identifiable {
+        /// Notify with a Switch button and wait to be told.
+        case ask
+        /// Promote the wired connection as soon as it proves usable.
+        case automatically
+        case ignore
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .ask: "Ask me"
+            case .automatically: "Switch automatically"
+            case .ignore: "Do nothing"
+            }
+        }
+    }
+
+    /// What to do when a wired connection becomes usable while something else is active.
+    var wiredArrival: WiredArrival { didSet { store(wiredArrival.rawValue, "wiredArrival") } }
 
     /// Whether auto-switch also bounces Wi-Fi. Off by default: reordering is silent,
     /// bouncing Wi-Fi drops every open connection, and doing that unattended is rude.
@@ -45,7 +63,13 @@ final class AppSettings {
             "showNameInMenuBar": false,
             "checkForUpdatesAtLaunch": true,
         ])
-        autoSwitch = defaults.bool(forKey: "autoSwitch")
+        // Migrated from the old on/off switch: anyone who had automatic switching on now
+        // gets asked first, which is the same trigger with the decision handed back.
+        if let stored = defaults.string(forKey: "wiredArrival"), let behaviour = WiredArrival(rawValue: stored) {
+            wiredArrival = behaviour
+        } else {
+            wiredArrival = defaults.bool(forKey: "autoSwitch") ? .ask : .ignore
+        }
         autoSwitchForcesReconnect = defaults.bool(forKey: "autoSwitchForce")
         promptForNewServices = defaults.bool(forKey: "promptNewServices")
         settleDelaySeconds = defaults.integer(forKey: "settleDelay")

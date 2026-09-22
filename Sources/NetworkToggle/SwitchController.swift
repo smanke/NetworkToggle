@@ -18,6 +18,7 @@ final class SwitchController {
 
     private let monitor: NetworkMonitor
     private let helper: HelperClient
+    private let notifier: WiredArrivalNotifier
     private let settings = AppSettings.shared
 
     /// Services the user has already declined to promote, so a dock they deliberately
@@ -27,9 +28,10 @@ final class SwitchController {
         set { UserDefaults.standard.set(Array(newValue), forKey: "declinedServices") }
     }
 
-    init(monitor: NetworkMonitor, helper: HelperClient) {
+    init(monitor: NetworkMonitor, helper: HelperClient, notifier: WiredArrivalNotifier) {
         self.monitor = monitor
         self.helper = helper
+        self.notifier = notifier
 
         monitor.onWiredBecameAvailable = { [weak self] status in
             Task { @MainActor in await self?.handleWiredArrival(status) }
@@ -54,6 +56,17 @@ final class SwitchController {
                 ? "Switched to \(status.name) and reconnected."
                 : "Switched to \(status.name)."
         }
+    }
+
+    /// Takes up an offer made by a notification, which carries the service id rather than
+    /// a snapshot that may be stale by the time someone clicks.
+    func switchTo(serviceID: String, force: Bool) async {
+        monitor.refresh()
+        guard let status = monitor.statuses.first(where: { $0.id == serviceID }) else {
+            lastError = "That connection is no longer available."
+            return
+        }
+        await switchTo(status, force: force)
     }
 
     /// Writes a whole order at once — what the drag-and-drop list commits.
@@ -149,8 +162,18 @@ final class SwitchController {
 
     // MARK: - Automatic behaviour
 
+    /// Development affordance: offers the first usable wired connection that is not already
+    /// active, as though it had just been plugged in.
+    func simulateWiredArrival() async {
+        guard let candidate = monitor.statuses.first(where: { $0.service.isWired && $0.isUsable && !$0.isPrimary }) else {
+            lastError = "No wired connection to offer — everything wired is either active or unplugged."
+            return
+        }
+        await handleWiredArrival(candidate)
+    }
+
     private func handleWiredArrival(_ status: ServiceStatus) async {
-        guard settings.autoSwitch, helper.state.isReady else { return }
+        guard settings.wiredArrival != .ignore, helper.state.isReady else { return }
 
         // Let DHCP, the router advertisement and any dock-side link training finish.
         try? await Task.sleep(for: .seconds(settings.settleDelaySeconds))
@@ -164,12 +187,24 @@ final class SwitchController {
         // The guard that matters. A dock whose uplink is dead looks fully configured;
         // only a reply from the gateway distinguishes it from a working one. No reply
         // means we ask rather than act.
-        guard await GatewayProbe.reachable(router) else {
+        // macOS's own ARP evidence first: an app cannot ping. ICMP from an ordinary app is
+        // dropped in silence unless local-network permission has been granted — verified by
+        // sending one and never hearing back while /sbin/ping answered in 6 ms — so a probe
+        // on its own would refuse every switch forever.
+        let gatewayAnswered = fresh.gatewayConfirmed ? true : await GatewayProbe.reachable(router)
+        guard gatewayAnswered else {
+            Diagnostics.note("gateway \(router) unconfirmed on \(fresh.bsdName ?? "?"); not offering")
             log.info("Gateway \(router, privacy: .public) did not answer; not auto-switching.")
             await notify(
                 title: "Wired connection not responding",
                 body: "\(fresh.name) is connected but its gateway isn’t answering. Staying on Wi-Fi."
             )
+            return
+        }
+
+        guard settings.wiredArrival == .automatically else {
+            // Ask, and let the notification's Switch button do it.
+            await notifier.offer(fresh, force: settings.autoSwitchForcesReconnect)
             return
         }
 

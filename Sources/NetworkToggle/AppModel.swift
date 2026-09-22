@@ -15,6 +15,7 @@ final class AppModel {
     let meter = ThroughputMeter()
     let strandedMonitor: StrandedTrafficMonitor
     let strandedMeter = ThroughputMeter()
+    let notifier = WiredArrivalNotifier()
     private(set) var controller: SwitchController!
 
     @ObservationIgnored private var previewWindow: NSWindow?
@@ -22,7 +23,11 @@ final class AppModel {
 
     init() {
         strandedMonitor = StrandedTrafficMonitor(helper: helper)
-        controller = SwitchController(monitor: monitor, helper: helper)
+        controller = SwitchController(monitor: monitor, helper: helper, notifier: notifier)
+        notifier.start()
+        notifier.onSwitch = { [weak self] serviceID, force in
+            Task { @MainActor in await self?.controller.switchTo(serviceID: serviceID, force: force) }
+        }
         helper.refreshState()
         monitor.start()
         openPreviewWindowIfRequested()

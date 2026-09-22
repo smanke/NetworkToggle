@@ -10,9 +10,13 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Automatic switching") {
-                Toggle("Switch to a wired connection automatically", isOn: $settings.autoSwitch)
+                Picker("When a wired connection appears", selection: $settings.wiredArrival) {
+                    ForEach(AppSettings.WiredArrival.allCases) { behaviour in
+                        Text(behaviour.label).tag(behaviour)
+                    }
+                }
                 Toggle("Also force a reconnect", isOn: $settings.autoSwitchForcesReconnect)
-                    .disabled(!settings.autoSwitch)
+                    .disabled(settings.wiredArrival == .ignore)
                 Text("Forcing a reconnect cycles Wi-Fi, which is the only way open "
                      + "connections and VPN tunnels move to the wired link. It briefly "
                      + "drops everything.")
@@ -24,7 +28,7 @@ struct SettingsView: View {
                     Text("4 seconds").tag(4)
                     Text("8 seconds").tag(8)
                 }
-                .disabled(!settings.autoSwitch)
+                .disabled(settings.wiredArrival == .ignore)
             }
 
             Section("New docks") {
