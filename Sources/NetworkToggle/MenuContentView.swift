@@ -32,6 +32,35 @@ struct MenuContentView: View {
         }
     }
 
+    /// Traffic below this on a non-active connection is keepalives and background chatter,
+    /// not something worth a warning: four idle connections here moved 6 KB/s while the
+    /// wired link did the real work, and calling that "still in use" was just wrong.
+    private static let busyBytesPerSecond: Double = 50_000
+
+    private func rate(for stranded: StrandedInterface) -> Throughput? {
+        strandedMeter.interface == stranded.bsdName ? strandedMeter.reading : nil
+    }
+
+    /// Connections worth interrupting someone over: something is actually flowing, or a
+    /// file share is involved, whose next copy would go the wrong way.
+    private var noteworthyStranded: [StrandedInterface] {
+        strandedMonitor.stranded.filter { stranded in
+            if stranded.includesFileSharing { return true }
+            guard let rate = rate(for: stranded) else { return false }
+            return rate.downloadBytesPerSecond + rate.uploadBytesPerSecond >= Self.busyBytesPerSecond
+        }
+    }
+
+    /// The rest, shown as a count beside the connection instead of as a warning.
+    private var quietStranded: [String: Int] {
+        let noisy = Set(noteworthyStranded.map(\.bsdName))
+        return Dictionary(
+            strandedMonitor.stranded.filter { !noisy.contains($0.bsdName) }
+                .map { ($0.bsdName, $0.connectionCount) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
     private var activeConnectionName: String {
         (monitor.vpnCarrier ?? monitor.primary)?.name ?? "the active connection"
     }
@@ -90,10 +119,10 @@ struct MenuContentView: View {
                 throughput: meter.reading
             )
 
-            ForEach(strandedMonitor.stranded, id: \.bsdName) { stranded in
+            ForEach(noteworthyStranded, id: \.bsdName) { stranded in
                 StrandedTrafficNotice(
                     stranded: stranded,
-                    rate: strandedMeter.interface == stranded.bsdName ? strandedMeter.reading : nil,
+                    rate: rate(for: stranded),
                     activeName: activeConnectionName,
                     canReconnect: stranded.isWiFi && helper.state.isReady,
                     onReconnect: { Task { await controller.moveConnectionsToActive() } }
@@ -160,7 +189,11 @@ struct MenuContentView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, status in
-                        ServiceRow(status: status, canSwitch: helper.state.isReady) {
+                        ServiceRow(
+                            status: status,
+                            canSwitch: helper.state.isReady,
+                            idleConnections: status.bsdName.flatMap { quietStranded[$0] } ?? 0
+                        ) {
                             request(.switchTo(status, force: false))
                         }
                         .frame(height: rowHeight)
@@ -501,12 +534,16 @@ private struct StrandedTrafficNotice: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("\(stranded.name) is still in use", systemImage: "exclamationmark.triangle")
+            Label(isBusy ? "\(stranded.name) is still in use" : "File sharing is still on \(stranded.name)",
+                  systemImage: "exclamationmark.triangle")
                 .font(.callout)
                 .fontWeight(.medium)
-            Text("\(stranded.summary) \(stranded.connectionCount == 1 ? "is" : "are") still on "
-                 + "\(stranded.name). Connections opened before \(activeName) became active "
-                 + "stay where they started.")
+            Text(isBusy
+                 ? "\(stranded.summary) \(stranded.connectionCount == 1 ? "is" : "are") still on "
+                   + "\(stranded.name). Connections opened before \(activeName) became active stay "
+                   + "where they started."
+                 : "\(stranded.summary) opened before \(activeName) became active, so they stayed on "
+                   + "\(stranded.name). Copies over them go that way too, however idle they look now.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -632,6 +669,7 @@ private struct VPNInterruptionNotice: View {
 struct ServiceRow: View {
     let status: ServiceStatus
     let canSwitch: Bool
+    var idleConnections: Int = 0
     let onUse: () -> Void
 
     @State private var isHovering = false
@@ -663,6 +701,10 @@ struct ServiceRow: View {
                 Badge(text: status.carriesVPN ? "Active · VPN" : "Active", tint: .green)
             } else if status.carriesVPN {
                 Badge(text: "VPN", tint: .green)
+            } else if idleConnections > 0, !status.isPrimary {
+                Badge(text: "\(idleConnections) idle", tint: .secondary)
+                    .help("\(idleConnections) connection\(idleConnections == 1 ? "" : "s") opened before "
+                          + "the current one became active are still here, carrying almost nothing.")
             } else if status.isUsable {
                 if isHovering && canSwitch {
                     Button("Use", action: onUse)

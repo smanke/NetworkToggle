@@ -21,6 +21,8 @@ struct StrandedInterface: Equatable {
 
     var connectionCount: Int { peers.reduce(0) { $0 + $1.count } }
 
+    var includesFileSharing: Bool { peers.contains { $0.isFileSharing } }
+
     /// "2 connections to MediaNAS (file sharing)", or "5 connections to MediaNAS (file
     /// sharing) and 2 others".
     var summary: String {
@@ -35,6 +37,9 @@ struct StrandedInterface: Equatable {
 struct StrandedPeer: Hashable {
     let label: String
     let count: Int
+    /// File shares matter even when idle: the next copy to them goes over the wrong
+    /// connection. Other idle connections are just background chatter.
+    let isFileSharing: Bool
 }
 
 /// Finds connections left on an interface after another became the active connection.
@@ -129,7 +134,13 @@ final class StrandedTrafficMonitor {
             let mine = hits.filter { $0.localAddress == interface.ipv4 }
             guard !mine.isEmpty else { continue }
             let peers = Dictionary(grouping: mine, by: label(for:))
-                .map { StrandedPeer(label: $0.key, count: $0.value.count) }
+                .map { label, connections in
+                    StrandedPeer(
+                        label: label,
+                        count: connections.count,
+                        isFileSharing: connections.contains { Self.fileSharingPorts.contains($0.remotePort) }
+                    )
+                }
                 .sorted { $0.count != $1.count ? $0.count > $1.count : $0.label < $1.label }
             result.append(StrandedInterface(bsdName: interface.bsdName, name: interface.name,
                                             isWiFi: interface.isWiFi, peers: peers))

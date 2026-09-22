@@ -85,8 +85,10 @@ Wi-Fi was active keeps every copy to it on Wi-Fi indefinitely — one NAS share 
 moved over 40 GB each way on Wi-Fi while Ethernet was the active connection.
 
 While the menu is open, NetworkToggle lists connections still bound to an interface that
-isn't the active one and shows them, with their live throughput, under **Wi-Fi is still in
-use**. **Move to Ethernet** turns Wi-Fi off until they reconnect over the active
+isn't the active one. It only *warns* when that matters: something is actually flowing
+(more than 0.05 MB/s), or a file share is involved, whose next copy would go the wrong way
+however idle it looks. Everything else — background keepalives that move a few KB/s — shows
+as a quiet "N idle" count beside the connection instead of a warning. **Move to Ethernet** turns Wi-Fi off until they reconnect over the active
 connection, then turns it back on. A quick off/on is not enough — Wi-Fi comes back with
 the same address within seconds and the connections just resume — so it waits for them to
 actually leave, for up to 30 seconds. File shares reconnect on their own within about ten
