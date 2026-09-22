@@ -1,58 +1,29 @@
 import AppKit
-import UserNotifications
+import SwiftUI
 import NetworkToggleKit
 
-/// Offers a wired connection the moment one becomes usable, as a notification with a
-/// Switch button.
+/// Offers a wired connection the moment one becomes usable, as a small panel near the
+/// menu bar with one button to take it and one to decline.
 ///
-/// A notification rather than a window because this happens while you are working in
-/// something else: it waits in Notification Centre if you miss it, and an accessory app
-/// cannot reliably put a modal on screen from a background task anyway.
+/// Not a system notification: macOS puts a banner's actions behind an "Options" menu
+/// unless the user has set this app's notifications to Alerts, so the two choices could
+/// never sit side by side with equal weight. A panel the app draws itself always shows
+/// both. It does not take focus, so it cannot interrupt typing, and it clears itself
+/// after half a minute if nobody answers.
 @MainActor
-final class WiredArrivalNotifier: NSObject, UNUserNotificationCenterDelegate {
-    private enum Identifier {
-        static let category = "wired-available"
-        static let switchNow = "switch-now"
-        static let dismiss = "not-now"
-        static let serviceKey = "serviceID"
-        static let forceKey = "force"
-    }
-
+final class WiredArrivalNotifier {
     /// Called with the service to switch to, and whether to move open connections as well.
     var onSwitch: ((String, Bool) -> Void)?
 
-    /// The last offer made, so a link that flaps does not produce a pile of notifications.
+    private var panel: NSPanel?
+    private var dismissal: Task<Void, Never>?
+
+    /// The last offer made, so a link that flaps does not reopen this repeatedly.
     private var lastOffer: (serviceID: String, at: ContinuousClock.Instant)?
-    /// Its notification id, so the previous one can be withdrawn before a new one is posted.
-    private var lastNotificationID: String?
 
-    func start() {
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
+    private static let visibleFor = Duration.seconds(30)
 
-        let switchAction = UNNotificationAction(
-            identifier: Identifier.switchNow,
-            title: "Switch",
-            options: []
-        )
-        let dismissAction = UNNotificationAction(identifier: Identifier.dismiss, title: "Not Now", options: [])
-        center.setNotificationCategories([
-            UNNotificationCategory(
-                identifier: Identifier.category,
-                actions: [switchAction, dismissAction],
-                intentIdentifiers: [],
-                options: []
-            )
-        ])
-
-        Task {
-            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
-            let settings = await center.notificationSettings()
-            Diagnostics.note("notifications: granted=\(granted) authorization=\(settings.authorizationStatus.rawValue) "
-                             + "alertSetting=\(settings.alertSetting.rawValue) alertStyle=\(settings.alertStyle.rawValue) "
-                             + "notificationCentre=\(settings.notificationCenterSetting.rawValue) sound=\(settings.soundSetting.rawValue)")
-        }
-    }
+    func start() {}
 
     /// Offers `status`, unless the same one was offered in the last minute.
     func offer(_ status: ServiceStatus, force: Bool) async {
@@ -61,72 +32,145 @@ final class WiredArrivalNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
         lastOffer = (status.id, .now)
 
-        let center = UNUserNotificationCenter.current()
-        guard await center.notificationSettings().authorizationStatus == .authorized else {
-            // Without permission the menu is the only place this can be offered, and it
-            // already shows the connection with a Switch button.
-            Diagnostics.note("wired arrival: no notification permission, offer left to the menu")
-            return
-        }
-
-        let content = UNMutableNotificationContent()
-        content.title = "\(status.name) is available"
-        content.body = [status.speedLabel.map { "Wired, \($0)." }, "Switch from Wi-Fi?"]
-            .compactMap { $0 }.joined(separator: " ")
-        content.categoryIdentifier = Identifier.category
-        content.userInfo = [Identifier.serviceKey: status.id, Identifier.forceKey: force]
-        content.sound = .default
-
-        // A fresh id each time, and the previous one withdrawn first. Re-posting under an
-        // identifier that is still sitting in Notification Centre updates it in place —
-        // silently, with no banner — so the offer would never be seen again.
-        if let lastNotificationID {
-            center.removeDeliveredNotifications(withIdentifiers: [lastNotificationID])
-        }
-        let identifier = "wired-\(status.id)-\(UUID().uuidString)"
-        lastNotificationID = identifier
-
-        do {
-            try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
-            Diagnostics.note("wired arrival: offered \(status.name)")
-        } catch {
-            Diagnostics.note("wired arrival: could not post the offer — \(error.localizedDescription)")
-        }
+        present(status: status, force: force)
+        Diagnostics.note("wired arrival: offered \(status.name)")
     }
 
-    // MARK: - UNUserNotificationCenterDelegate
-
-    // Completion-handler form on purpose. The async form did not reach this class at all:
-    // clicking the banner did nothing, with no sign of it here.
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .sound])
+    func dismiss() {
+        dismissal?.cancel()
+        dismissal = nil
+        panel?.orderOut(nil)
+        panel = nil
     }
 
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
-    ) {
-        let info = response.notification.request.content.userInfo
-        let serviceID = info[Identifier.serviceKey] as? String
-        let force = info[Identifier.forceKey] as? Bool ?? false
-        let action = response.actionIdentifier
+    private func present(status: ServiceStatus, force: Bool) {
+        dismiss()
 
-        Task { @MainActor [weak self] in
-            Diagnostics.note("notification response: \(action) service=\(serviceID ?? "none")")
-            switch action {
-            // Clicking the notification itself counts as taking the offer: that is the
-            // single click this is for, and the change is undoable from the menu.
-            case Identifier.switchNow, UNNotificationDefaultActionIdentifier:
-                if let serviceID { self?.onSwitch?(serviceID, force) }
-            default:
-                break
+        let serviceID = status.id
+        let view = WiredArrivalOffer(
+            name: status.name,
+            detail: [status.speedLabel, status.ipv4].compactMap { $0 }.joined(separator: " · "),
+            accept: { [weak self] in
+                Diagnostics.note("wired arrival: accepted")
+                self?.dismiss()
+                self?.onSwitch?(serviceID, force)
+            },
+            decline: { [weak self] in
+                Diagnostics.note("wired arrival: declined")
+                self?.dismiss()
             }
-            completionHandler()
+        )
+
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame.size = hosting.fittingSize
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: hosting.fittingSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = hosting
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        // Top right, just under the menu bar, where a notification would have appeared.
+        if let screen = NSScreen.main {
+            let area = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(
+                x: area.maxX - hosting.fittingSize.width - 16,
+                y: area.maxY - hosting.fittingSize.height - 12
+            ))
         }
+        panel.orderFrontRegardless()
+        self.panel = panel
+
+        dismissal = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.visibleFor)
+            guard !Task.isCancelled else { return }
+            Diagnostics.note("wired arrival: offer timed out")
+            self?.dismiss()
+        }
+    }
+}
+
+private struct WiredArrivalOffer: View {
+    let name: String
+    let detail: String
+    let accept: () -> Void
+    let decline: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(nsImage: ConnectorShape.menuBarImage(filled: true))
+                    .renderingMode(.template)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(name) is available")
+                        .fontWeight(.medium)
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text("Switch from Wi-Fi to this wired connection?")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Two buttons of equal weight: the colour says which is which, so neither is
+            // the one you land on by accident. Drawn rather than tinted, because a panel
+            // that never takes focus renders standard controls in their inactive grey.
+            HStack(spacing: 8) {
+                OfferButton(title: "Switch", systemImage: "checkmark.circle.fill",
+                            colour: .green, filled: true, action: accept)
+                OfferButton(title: "Stay on Wi-Fi", systemImage: "xmark.circle.fill",
+                            colour: .red, filled: false, action: decline)
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
+        .background(.regularMaterial, in: .rect(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary))
+    }
+}
+
+private struct OfferButton: View {
+    let title: String
+    let systemImage: String
+    let colour: Color
+    let filled: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.callout)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .foregroundStyle(filled ? AnyShapeStyle(.white) : AnyShapeStyle(colour))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(
+                    filled ? AnyShapeStyle(colour) : AnyShapeStyle(colour.opacity(0.15)),
+                    in: .capsule
+                )
+                .overlay(Capsule().strokeBorder(colour.opacity(filled ? 0 : 0.35)))
+                .brightness(isHovering ? (filled ? 0.06 : 0.03) : 0)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }

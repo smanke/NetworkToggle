@@ -79,11 +79,16 @@ gigabit link.
 
 ## When a wired connection appears
 
-Plug in a dock while you are on Wi-Fi and NetworkToggle offers the wired connection as a
-notification — **"USB 10/100/1000 LAN is available — Switch from Wi-Fi?"** — with a
-**Switch** button. Clicking the notification itself does the same thing; it is one click
-either way, and the change is undoable from the menu. Settings offers **Ask me** (the
+Plug in a dock while you are on Wi-Fi and NetworkToggle offers the wired connection in a
+small panel below the menu bar — **"USB 10/100/1000 LAN is available"** — with a green
+**Switch** and a red **Stay on Wi-Fi**, side by side. It never takes focus, so it cannot
+interrupt typing, and it clears itself after 30 seconds. Settings offers **Ask me** (the
 default), **Switch automatically**, or **Do nothing**.
+
+The panel replaces a system notification because macOS hides a banner's buttons behind an
+"Options" menu unless the user has set this app's notifications to Alerts — the two
+choices could never sit side by side. Drawing it also means the buttons carry colour: a
+panel that never takes focus renders standard controls in their inactive grey.
 
 Before offering anything it waits for the link to settle and checks the gateway actually
 answered on that interface, so a dock whose uplink is dead is never offered. That check
