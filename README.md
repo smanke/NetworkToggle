@@ -212,6 +212,14 @@ now emits both, and `release.sh` uploads both.
 Both the app *and* the disk image need their own notarization ticket: a download picks
 up a quarantine attribute and Gatekeeper checks the image before it looks at the app.
 
+## Diagnostics
+
+NetworkToggle appends what it decides to `~/Library/Logs/NetworkToggle.log` — which
+connection it sees as active, every arrival and what it did about it, every switch. The
+file is capped and always on, because os_log entries from this app never appear in
+`log show` at any level, so without it "why did nothing happen when I plugged the dock in?"
+could only be answered by reproducing with a special build.
+
 ## Development
 
 `NETWORKTOGGLE_UI_PREVIEW=1` opens the popover's contents in an ordinary window;

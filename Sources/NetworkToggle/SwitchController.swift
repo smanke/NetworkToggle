@@ -162,15 +162,10 @@ final class SwitchController {
 
     // MARK: - Automatic behaviour
 
-    /// Development affordance: offers the first usable wired connection that is not already
-    /// active, as though it had just been plugged in.
+    /// Development affordance: replays a dock arrival through the monitor's own detection.
     func simulateWiredArrival() async {
-        let wired = monitor.statuses.filter { $0.service.isWired && $0.isUsable }
-        guard let candidate = wired.first(where: { !$0.isPrimary }) ?? wired.first else {
-            lastError = "No wired connection to offer — everything wired is either active or unplugged."
-            return
-        }
-        await handleWiredArrival(candidate)
+        monitor.refresh()
+        monitor.simulateWiredArrival()
     }
 
     private func handleWiredArrival(_ status: ServiceStatus) async {

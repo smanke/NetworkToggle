@@ -335,6 +335,16 @@ final class NetworkMonitor {
         onNewServiceAppeared?(newWired)
     }
 
+    /// Development affordance: forgets what is plugged in, so the next check treats the
+    /// current wired connection as newly arrived. Goes through the same detection as a real
+    /// dock, which a hook that called the handler directly did not — and that is precisely
+    /// how a broken arrival path passed its test.
+    func simulateWiredArrival() {
+        previouslyUsableWired.removeAll()
+        hasSeenWiredOnce = true
+        detectWiredArrival()
+    }
+
     private func detectWiredArrival() {
         // Whatever is already plugged in when the app starts is not an arrival; announcing
         // it would put a panel on screen at every launch.
@@ -348,9 +358,13 @@ final class NetworkMonitor {
         let arrived = usableWired.subtracting(previouslyUsableWired)
         previouslyUsableWired = usableWired
 
-        guard let first = arrived.compactMap({ id in statuses.first { $0.id == id } })
-            .first(where: { !$0.isPrimary })
+        // Report it whether or not it is already the active connection. macOS promotes a
+        // wired service that outranks Wi-Fi within a couple of seconds, so filtering out
+        // the active one here threw away every real dock reconnection — the app went
+        // silent at exactly the moment someone was watching it.
+        guard let first = arrived.compactMap({ id in statuses.first { $0.id == id } }).first
         else { return }
+        log.notice("Wired arrival: \(first.name, privacy: .public) primary=\(first.isPrimary) usable=\(first.isUsable)")
         onWiredBecameAvailable?(first)
     }
 }
