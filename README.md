@@ -211,6 +211,17 @@ version-stamped copy silently 404s the download link in this README for everyone
 which is exactly what happened to v1.0.3 when it was published by hand. `make_dmg.sh`
 now emits both, and `release.sh` uploads both.
 
+The disk image opens as a 600x400 window with 128px icons, the app on the left and
+Applications on the right. That layout ships as a captured `.DS_Store`
+(`Resources/dmg/DS_Store`) which `make_dmg.sh` copies into the staging folder, rather than
+being applied by driving Finder during the release — recapture it with
+`Tools/capture_dmg_layout.sh` if the window should change.
+
+A background picture behind the icons is *not* included: on macOS 27 Finder renders one
+only while it is dropped into the View Options picture well by hand, and discards it when
+the window closes. Both AppleScript and `dmgbuild` write the background record and Finder
+silently ignores it.
+
 Both the app *and* the disk image need their own notarization ticket: a download picks
 up a quarantine attribute and Gatekeeper checks the image before it looks at the app.
 

@@ -53,6 +53,13 @@ cp -R "${APP_DIR}" "${STAGING}/"
 # The familiar drag-the-app-onto-Applications install gesture.
 ln -s /Applications "${STAGING}/Applications"
 
+# The window layout — 600x400, 128px icons, app on the left and Applications on the
+# right — ships as a captured .DS_Store rather than by driving Finder at release time.
+# Finder scripting is too unreliable to sit in a release path (on macOS 27 it silently
+# ignores a background picture set that way), and a fixture makes every build identical.
+# Recapture with Tools/capture_dmg_layout.sh if the window should change.
+cp "Resources/dmg/DS_Store" "${STAGING}/.DS_Store"
+
 echo "Creating ${DMG_PATH}..."
 rm -f "${DMG_PATH}"
 hdiutil create \
