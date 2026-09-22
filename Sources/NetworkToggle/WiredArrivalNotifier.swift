@@ -1,6 +1,9 @@
 import AppKit
 import SwiftUI
 import NetworkToggleKit
+import os
+
+private let log = Logger(subsystem: NetworkToggleIDs.appBundleID, category: "wired-arrival")
 
 /// Offers a wired connection the moment one becomes usable, as a small panel near the
 /// menu bar with one button to take it and one to decline.
@@ -27,13 +30,31 @@ final class WiredArrivalNotifier {
 
     /// Offers `status`, unless the same one was offered in the last minute.
     func offer(_ status: ServiceStatus, force: Bool) async {
+        guard notRepeated(status) else { return }
+        present(status: status, force: force, alreadyActive: nil)
+        Diagnostics.note("wired arrival: offered \(status.name)")
+        log.notice("Offered \(status.name, privacy: .public)")
+    }
+
+    /// Says a wired connection took over, with a way straight back.
+    ///
+    /// macOS switches on its own whenever the wired connection outranks Wi-Fi, which is the
+    /// usual setup — so plugging a dock back in produced no offer at all, because there was
+    /// nothing left to offer. Saying so is the difference between the app looking broken and
+    /// looking like it is doing its job.
+    func confirm(_ status: ServiceStatus, revertTo wifi: ServiceStatus?) async {
+        guard notRepeated(status) else { return }
+        present(status: status, force: false, alreadyActive: wifi)
+        Diagnostics.note("wired arrival: confirmed \(status.name) (already active)")
+        log.notice("Confirmed \(status.name, privacy: .public) already active")
+    }
+
+    private func notRepeated(_ status: ServiceStatus) -> Bool {
         if let lastOffer, lastOffer.serviceID == status.id, ContinuousClock.now - lastOffer.at < .seconds(60) {
-            return
+            return false
         }
         lastOffer = (status.id, .now)
-
-        present(status: status, force: force)
-        Diagnostics.note("wired arrival: offered \(status.name)")
+        return true
     }
 
     func dismiss() {
@@ -43,21 +64,29 @@ final class WiredArrivalNotifier {
         panel = nil
     }
 
-    private func present(status: ServiceStatus, force: Bool) {
+    private func present(status: ServiceStatus, force: Bool, alreadyActive wifi: ServiceStatus?) {
         dismiss()
 
         let serviceID = status.id
+        // Already active: the choice is whether to stay, and the red button goes back to
+        // Wi-Fi. Not yet active: the choice is whether to switch at all.
         let view = WiredArrivalOffer(
-            name: status.name,
+            title: wifi == nil ? "\(status.name) is available" : "Now on \(status.name)",
             detail: [status.speedLabel, status.ipv4].compactMap { $0 }.joined(separator: " · "),
+            question: wifi == nil
+                ? "Switch from Wi-Fi to this wired connection?"
+                : "macOS moved you off Wi-Fi when it was plugged in.",
+            acceptTitle: wifi == nil ? "Switch" : "Keep it",
+            declineTitle: wifi == nil ? "Stay on Wi-Fi" : "Back to Wi-Fi",
             accept: { [weak self] in
                 Diagnostics.note("wired arrival: accepted")
                 self?.dismiss()
-                self?.onSwitch?(serviceID, force)
+                if wifi == nil { self?.onSwitch?(serviceID, force) }
             },
             decline: { [weak self] in
                 Diagnostics.note("wired arrival: declined")
                 self?.dismiss()
+                if let wifi { self?.onSwitch?(wifi.id, false) }
             }
         )
 
@@ -100,8 +129,11 @@ final class WiredArrivalNotifier {
 }
 
 private struct WiredArrivalOffer: View {
-    let name: String
+    let title: String
     let detail: String
+    let question: String
+    let acceptTitle: String
+    let declineTitle: String
     let accept: () -> Void
     let decline: () -> Void
 
@@ -112,7 +144,7 @@ private struct WiredArrivalOffer: View {
                     .renderingMode(.template)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("\(name) is available")
+                    Text(title)
                         .fontWeight(.medium)
                     if !detail.isEmpty {
                         Text(detail)
@@ -123,7 +155,7 @@ private struct WiredArrivalOffer: View {
                 Spacer(minLength: 0)
             }
 
-            Text("Switch from Wi-Fi to this wired connection?")
+            Text(question)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -131,9 +163,9 @@ private struct WiredArrivalOffer: View {
             // the one you land on by accident. Drawn rather than tinted, because a panel
             // that never takes focus renders standard controls in their inactive grey.
             HStack(spacing: 8) {
-                OfferButton(title: "Switch", systemImage: "checkmark.circle.fill",
+                OfferButton(title: acceptTitle, systemImage: "checkmark.circle.fill",
                             colour: .green, filled: true, action: accept)
-                OfferButton(title: "Stay on Wi-Fi", systemImage: "xmark.circle.fill",
+                OfferButton(title: declineTitle, systemImage: "xmark.circle.fill",
                             colour: .red, filled: false, action: decline)
             }
         }

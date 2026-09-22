@@ -79,10 +79,20 @@ gigabit link.
 
 ## When a wired connection appears
 
-Plug in a dock while you are on Wi-Fi and NetworkToggle offers the wired connection in a
-small panel below the menu bar — **"USB 10/100/1000 LAN is available"** — with a green
-**Switch** and a red **Stay on Wi-Fi**, side by side. It never takes focus, so it cannot
-interrupt typing, and it clears itself after 30 seconds. Settings offers **Ask me** (the
+Plug in a dock and NetworkToggle says so in a small panel below the menu bar. Which panel
+depends on what macOS did on its own:
+
+- **It already switched you** — the usual case, because the wired connection outranks Wi-Fi
+  in the order: the panel reports **"Now on USB 10/100/1000 LAN"**, with **Keep it** and
+  **Back to Wi-Fi**.
+- **It did not** — the wired connection is available but something else is still active:
+  the panel offers it — **"USB 10/100/1000 LAN is available"** — with **Switch** and
+**Stay on Wi-Fi**.
+
+Either way the two choices sit side by side, green for yes and red for no, the panel never
+takes focus so it cannot interrupt typing, and it clears itself after 30 seconds. Whatever
+is already plugged in when the app starts is not treated as an arrival, so launching the
+app never puts a panel on screen. Settings offers **Ask me** (the
 default), **Switch automatically**, or **Do nothing**.
 
 The panel replaces a system notification because macOS hides a banner's buttons behind an

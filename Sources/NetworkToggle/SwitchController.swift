@@ -165,7 +165,8 @@ final class SwitchController {
     /// Development affordance: offers the first usable wired connection that is not already
     /// active, as though it had just been plugged in.
     func simulateWiredArrival() async {
-        guard let candidate = monitor.statuses.first(where: { $0.service.isWired && $0.isUsable && !$0.isPrimary }) else {
+        let wired = monitor.statuses.filter { $0.service.isWired && $0.isUsable }
+        guard let candidate = wired.first(where: { !$0.isPrimary }) ?? wired.first else {
             lastError = "No wired connection to offer — everything wired is either active or unplugged."
             return
         }
@@ -180,9 +181,17 @@ final class SwitchController {
         monitor.refresh()
 
         guard let fresh = monitor.statuses.first(where: { $0.id == status.id }),
-              fresh.isUsable, !fresh.isPrimary,
+              fresh.isUsable,
               let router = fresh.router
         else { return }
+
+        // macOS switches on its own when the wired connection already outranks Wi-Fi, which
+        // is the usual setup — so there is nothing to offer, only something to report, with
+        // the way back one click away.
+        if fresh.isPrimary || fresh.carriesVPN {
+            await notifier.confirm(fresh, revertTo: monitor.wiFi)
+            return
+        }
 
         // The guard that matters. A dock whose uplink is dead looks fully configured;
         // only a reply from the gateway distinguishes it from a working one. No reply

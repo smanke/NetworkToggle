@@ -81,6 +81,7 @@ final class NetworkMonitor {
 
     private var knownServiceIDs: Set<String> = []
     private var previouslyUsableWired: Set<String> = []
+    private var hasSeenWiredOnce = false
 
     var primary: ServiceStatus? { statuses.first { $0.isPrimary } }
     var vpnCarrier: ServiceStatus? { statuses.first { $0.carriesVPN } }
@@ -335,6 +336,14 @@ final class NetworkMonitor {
     }
 
     private func detectWiredArrival() {
+        // Whatever is already plugged in when the app starts is not an arrival; announcing
+        // it would put a panel on screen at every launch.
+        if !hasSeenWiredOnce {
+            hasSeenWiredOnce = true
+            previouslyUsableWired = Set(statuses.filter { $0.service.isWired && $0.isUsable }.map(\.id))
+            return
+        }
+
         let usableWired = Set(statuses.filter { $0.service.isWired && $0.isUsable }.map(\.id))
         let arrived = usableWired.subtracting(previouslyUsableWired)
         previouslyUsableWired = usableWired
