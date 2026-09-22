@@ -25,6 +25,9 @@ final class AppModel {
         strandedMonitor = StrandedTrafficMonitor(helper: helper)
         controller = SwitchController(monitor: monitor, helper: helper, notifier: notifier)
         notifier.start()
+        notifier.onMoveTraffic = { [weak self] in
+            Task { @MainActor in await self?.controller.moveConnectionsToActive() }
+        }
         notifier.onSwitch = { [weak self] serviceID, force in
             Task { @MainActor in await self?.controller.switchTo(serviceID: serviceID, force: force) }
         }

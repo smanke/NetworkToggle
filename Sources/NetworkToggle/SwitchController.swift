@@ -120,14 +120,26 @@ final class SwitchController {
         return remaining
     }
 
+    /// How many connections are still bound to Wi-Fi's address. Needs the helper: an
+    /// ordinary app is handed an empty connection list.
+    private func connectionsStillOnWiFi() async -> Int {
+        guard helper.state.isReady, let address = monitor.wiFi?.ipv4,
+              let connections = await helper.establishedConnections()
+        else { return 0 }
+        return connections.filter { $0.localAddress == address }.count
+    }
+
     /// Moves connections left on Wi-Fi after another connection became active.
     func moveConnectionsToActive() async {
         let active = monitor.vpnCarrier?.name ?? monitor.primary?.name ?? "the active connection"
         await run("Moving connections to \(active)…") {
             let remaining = try await self.moveConnectionsOffWiFi()
+            // The stragglers are idle: a connection only notices its interface is gone when
+            // it next tries to send, so it moves when it reconnects, not when it is used.
             self.lastAction = remaining == 0
                 ? "Moved everything off Wi-Fi to \(active)."
-                : "\(remaining) connection\(remaining == 1 ? "" : "s") stayed on Wi-Fi."
+                : "\(remaining) idle connection\(remaining == 1 ? "" : "s") stayed on Wi-Fi; "
+                  + "\(remaining == 1 ? "it moves" : "they move") when \(remaining == 1 ? "it" : "they") reconnect."
         }
     }
 
@@ -184,7 +196,7 @@ final class SwitchController {
         // is the usual setup — so there is nothing to offer, only something to report, with
         // the way back one click away.
         if fresh.isPrimary || fresh.carriesVPN {
-            await notifier.confirm(fresh, revertTo: monitor.wiFi)
+            await notifier.confirm(fresh, revertTo: monitor.wiFi, strandedOnWiFi: await connectionsStillOnWiFi())
             return
         }
 

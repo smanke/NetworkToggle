@@ -83,8 +83,10 @@ Plug in a dock and NetworkToggle says so in a small panel below the menu bar. Wh
 depends on what macOS did on its own:
 
 - **It already switched you** — the usual case, because the wired connection outranks Wi-Fi
-  in the order: the panel reports **"Now on USB 10/100/1000 LAN"**, with **Keep it** and
-  **Back to Wi-Fi**.
+  in the order: the panel reports **"Now on USB 10/100/1000 LAN"**. If connections opened
+  earlier are still running over Wi-Fi it says how many, and the green button becomes
+  **Move traffic over**, which holds Wi-Fi off until they reconnect on the wired link. With
+  nothing left behind the button is just **Keep it**. The red one is **Back to Wi-Fi**.
 - **It did not** — the wired connection is available but something else is still active:
   the panel offers it — **"USB 10/100/1000 LAN is available"** — with **Switch** and
 **Stay on Wi-Fi**.

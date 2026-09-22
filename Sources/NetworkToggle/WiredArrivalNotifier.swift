@@ -17,6 +17,8 @@ private let log = Logger(subsystem: NetworkToggleIDs.appBundleID, category: "wir
 final class WiredArrivalNotifier {
     /// Called with the service to switch to, and whether to move open connections as well.
     var onSwitch: ((String, Bool) -> Void)?
+    /// Called to pull connections still running over Wi-Fi across to the active connection.
+    var onMoveTraffic: (() -> Void)?
 
     private var panel: NSPanel?
     private var dismissal: Task<Void, Never>?
@@ -31,7 +33,7 @@ final class WiredArrivalNotifier {
     /// Offers `status`, unless the same one was offered in the last minute.
     func offer(_ status: ServiceStatus, force: Bool) async {
         guard notRepeated(status) else { return }
-        present(status: status, force: force, alreadyActive: nil)
+        present(status: status, force: force, alreadyActive: nil, strandedOnWiFi: 0)
         Diagnostics.note("wired arrival: offered \(status.name)")
         log.notice("Offered \(status.name, privacy: .public)")
     }
@@ -42,9 +44,9 @@ final class WiredArrivalNotifier {
     /// usual setup — so plugging a dock back in produced no offer at all, because there was
     /// nothing left to offer. Saying so is the difference between the app looking broken and
     /// looking like it is doing its job.
-    func confirm(_ status: ServiceStatus, revertTo wifi: ServiceStatus?) async {
+    func confirm(_ status: ServiceStatus, revertTo wifi: ServiceStatus?, strandedOnWiFi: Int) async {
         guard notRepeated(status) else { return }
-        present(status: status, force: false, alreadyActive: wifi)
+        present(status: status, force: false, alreadyActive: wifi, strandedOnWiFi: strandedOnWiFi)
         Diagnostics.note("wired arrival: confirmed \(status.name) (already active)")
         log.notice("Confirmed \(status.name, privacy: .public) already active")
     }
@@ -64,24 +66,36 @@ final class WiredArrivalNotifier {
         panel = nil
     }
 
-    private func present(status: ServiceStatus, force: Bool, alreadyActive wifi: ServiceStatus?) {
+    private func present(status: ServiceStatus, force: Bool, alreadyActive wifi: ServiceStatus?, strandedOnWiFi: Int) {
         dismiss()
 
         let serviceID = status.id
         // Already active: the choice is whether to stay, and the red button goes back to
         // Wi-Fi. Not yet active: the choice is whether to switch at all.
+        // New connections already take the wired link; the ones opened while you were on
+        // Wi-Fi stay there until something moves them, which is the whole point of the
+        // green button here.
+        let hasStranded = wifi != nil && strandedOnWiFi > 0
         let view = WiredArrivalOffer(
             title: wifi == nil ? "\(status.name) is available" : "Now on \(status.name)",
             detail: [status.speedLabel, status.ipv4].compactMap { $0 }.joined(separator: " · "),
             question: wifi == nil
                 ? "Switch from Wi-Fi to this wired connection?"
-                : "macOS moved you off Wi-Fi when it was plugged in.",
-            acceptTitle: wifi == nil ? "Switch" : "Keep it",
+                : hasStranded
+                    ? "\(strandedOnWiFi) connection\(strandedOnWiFi == 1 ? "" : "s") opened earlier "
+                      + "\(strandedOnWiFi == 1 ? "is" : "are") still going over Wi-Fi. Moving them turns "
+                      + "Wi-Fi off briefly."
+                    : "macOS moved you off Wi-Fi when it was plugged in.",
+            acceptTitle: wifi == nil ? "Switch" : (hasStranded ? "Move traffic over" : "Keep it"),
             declineTitle: wifi == nil ? "Stay on Wi-Fi" : "Back to Wi-Fi",
             accept: { [weak self] in
-                Diagnostics.note("wired arrival: accepted")
+                Diagnostics.note("wired arrival: accepted (stranded=\(strandedOnWiFi))")
                 self?.dismiss()
-                if wifi == nil { self?.onSwitch?(serviceID, force) }
+                if wifi == nil {
+                    self?.onSwitch?(serviceID, force)
+                } else if hasStranded {
+                    self?.onMoveTraffic?()
+                }
             },
             decline: { [weak self] in
                 Diagnostics.note("wired arrival: declined")
