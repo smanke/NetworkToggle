@@ -15,6 +15,10 @@ final class HelperService: NSObject, HelperProtocol {
         reply(HelperVersion.current)
     }
 
+    func establishedConnections(reply: @escaping (String) -> Void) {
+        reply(TCPConnectionList.netstatOutput())
+    }
+
     func setServiceOrder(_ serviceIDs: [String], reply: @escaping (String?) -> Void) {
         reply(commitOrder { current in
             // Refuse anything that is not a straight permutation. A caller that passed a

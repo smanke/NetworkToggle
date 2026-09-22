@@ -6,6 +6,8 @@ struct MenuContentView: View {
     let helper: HelperClient
     let controller: SwitchController
     let meter: ThroughputMeter
+    let strandedMonitor: StrandedTrafficMonitor
+    let strandedMeter: ThroughputMeter
     var onAppear: () -> Void = {}
 
     /// Whether the menu is on screen. Throughput is only ever sampled while it is.
@@ -16,6 +18,22 @@ struct MenuContentView: View {
     private var measuredInterface: String? {
         guard let connection = monitor.vpnCarrier ?? monitor.primary, connection.linkUp else { return nil }
         return connection.bsdName
+    }
+
+    /// Physical interfaces that are up and addressed but are not the active connection —
+    /// anything still running over one of them was opened before the switch and stayed.
+    private var watchedInterfaces: [WatchedInterface] {
+        guard let active = measuredInterface else { return [] }
+        return monitor.statuses.compactMap { status in
+            guard let bsd = status.bsdName, bsd != active, status.linkUp, let address = status.ipv4,
+                  status.service.isWiFi || status.service.isWired, !status.service.isTunnel
+            else { return nil }
+            return WatchedInterface(bsdName: bsd, name: status.name, ipv4: address, isWiFi: status.service.isWiFi)
+        }
+    }
+
+    private var activeConnectionName: String {
+        (monitor.vpnCarrier ?? monitor.primary)?.name ?? "the active connection"
     }
 
     @Environment(\.openSettings) private var openSettings
@@ -72,6 +90,16 @@ struct MenuContentView: View {
                 throughput: meter.reading
             )
 
+            ForEach(strandedMonitor.stranded, id: \.bsdName) { stranded in
+                StrandedTrafficNotice(
+                    stranded: stranded,
+                    rate: strandedMeter.interface == stranded.bsdName ? strandedMeter.reading : nil,
+                    activeName: activeConnectionName,
+                    canReconnect: stranded.isWiFi && helper.state.isReady,
+                    onReconnect: { Task { await controller.moveConnectionsToActive() } }
+                )
+            }
+
             // The list is readable without any privilege, so it stays visible during
             // setup — seeing the order is half of what this app is for. Only the
             // controls that write are withheld.
@@ -97,16 +125,26 @@ struct MenuContentView: View {
             monitor.refresh()
             isOpen = true
             meter.measure(measuredInterface)
+            strandedMonitor.watch(watchedInterfaces)
         }
         .onDisappear {
             // Closing the menu stops sampling outright; nothing runs while it is shut.
             isOpen = false
             meter.measure(nil)
+            strandedMonitor.watch([])
+            strandedMeter.measure(nil)
         }
         .onChange(of: measuredInterface) { _, interface in
             // Follow the connection if it changes while the menu is open — a dock plugged
             // in, a VPN coming up — and stop if the link goes away.
             if isOpen { meter.measure(interface) }
+        }
+        .onChange(of: watchedInterfaces) { _, interfaces in
+            if isOpen { strandedMonitor.watch(interfaces) }
+        }
+        .onChange(of: strandedMonitor.stranded.first?.bsdName) { _, interface in
+            // Only measure the other interface while something is actually stranded on it.
+            if isOpen { strandedMeter.measure(interface) }
         }
         .onChange(of: monitor.statuses.map(\.id)) { _, newValue in
             if draftOrder.map(Set.init) != Set(newValue) { draftOrder = nil }
@@ -296,7 +334,7 @@ struct MenuContentView: View {
                     Label("Switch and force reconnect", systemImage: "bolt")
                     // Not "and VPNs": measured on NordVPN, moving its connection strands the
                     // tunnel rather than carrying it across.
-                    Text("Bounces Wi-Fi so open connections move too")
+                    Text("Holds Wi-Fi off until open connections move, then turns it back on")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -442,6 +480,67 @@ struct ActiveConnectionCard: View {
         [status.ipv4, status.speedLabel, status.bsdName]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+}
+
+/// Connections left on another interface after the active connection changed, with the
+/// one thing that moves them: reconnecting that interface.
+private struct StrandedTrafficNotice: View {
+    let stranded: StrandedInterface
+    let rate: Throughput?
+    let activeName: String
+    let canReconnect: Bool
+    let onReconnect: () -> Void
+
+    @State private var confirming = false
+
+    private var isBusy: Bool {
+        guard let rate else { return false }
+        return rate.downloadBytesPerSecond + rate.uploadBytesPerSecond >= 250_000
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(stranded.name) is still in use", systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .fontWeight(.medium)
+            Text("\(stranded.summary) \(stranded.connectionCount == 1 ? "is" : "are") still on "
+                 + "\(stranded.name). Connections opened before \(activeName) became active "
+                 + "stay where they started.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ThroughputLine(reading: rate)
+
+            if confirming {
+                Text("This turns \(stranded.name) off until these reconnect over \(activeName) — "
+                     + "usually under ten seconds — then turns it back on."
+                     + (isBusy ? " Data is moving over \(stranded.name) right now — a copy in "
+                                + "progress will be interrupted and may need restarting." : ""))
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Move connections") {
+                        confirming = false
+                        onReconnect()
+                    }
+                    .buttonStyle(.glassProminent)
+                    Button("Cancel") { confirming = false }
+                        .buttonStyle(.glass)
+                }
+            } else if canReconnect {
+                Button("Move to \(activeName)") { confirming = true }
+                    .buttonStyle(.glass)
+            } else if !stranded.isWiFi {
+                Text("They’ll move to \(activeName) the next time they reconnect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .padding(.horizontal, 12)
     }
 }
 

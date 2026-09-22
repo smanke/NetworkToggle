@@ -21,4 +21,10 @@ import Foundation
 
     /// Uninstall: the helper unloads its own daemon so the user can remove the app cleanly.
     func uninstall(reply: @escaping (String?) -> Void)
+
+    /// Established IPv4 TCP connections, as netstat's text. Read-only and takes no input.
+    /// Needed because the kernel gives an ordinary app an empty connection list, which
+    /// hides the connections a file share or another program left on the wrong interface.
+    func establishedConnections(reply: @escaping (String) -> Void)
+
 }

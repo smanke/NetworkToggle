@@ -153,10 +153,10 @@ final class HelperClient {
         // anything that is not the helper we shipped, signed by this team.
         new.setCodeSigningRequirement(NetworkToggleIDs.helperRequirement)
 
-        new.invalidationHandler = { [weak self] in
+        new.invalidationHandler = { @Sendable [weak self] in
             Task { @MainActor in self?.connection = nil }
         }
-        new.interruptionHandler = { [weak self] in
+        new.interruptionHandler = { @Sendable [weak self] in
             Task { @MainActor in self?.connection = nil }
         }
 
@@ -173,34 +173,22 @@ final class HelperClient {
     /// Bridges one callback-style XPC method into async, turning both a transport failure
     /// and a helper-reported error string into a thrown `HelperCallError`.
     private func withProxy(
-        _ body: @escaping (HelperProtocol, @escaping (String?) -> Void) -> Void
+        _ body: @escaping (HelperProtocol, @escaping @Sendable (String?) -> Void) -> Void
     ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let resumed = OSAllocatedUnfairLock(initialState: false)
-            func finish(_ result: Result<Void, Error>) {
-                let alreadyResumed = resumed.withLock { was -> Bool in
-                    defer { was = true }
-                    return was
-                }
-                guard !alreadyResumed else { return }
-                continuation.resume(with: result)
-            }
-
-            let proxy = makeConnection().remoteObjectProxyWithErrorHandler { error in
-                finish(.failure(HelperCallError.transport(error.localizedDescription)))
+        let result: Result<Void, HelperCallError> = await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            let proxy = makeConnection().remoteObjectProxyWithErrorHandler { @Sendable error in
+                once.resume(.failure(.transport(error.localizedDescription)))
             }
             guard let helper = proxy as? HelperProtocol else {
-                finish(.failure(HelperCallError.transport("The helper connection is unusable.")))
+                once.resume(.failure(.transport("The helper connection is unusable.")))
                 return
             }
-            body(helper) { message in
-                if let message {
-                    finish(.failure(HelperCallError.helper(message)))
-                } else {
-                    finish(.success(()))
-                }
+            body(helper) { @Sendable message in
+                once.resume(message.map { .failure(.helper($0)) } ?? .success(()))
             }
         }
+        try result.get()
     }
 
     // MARK: - Operations
@@ -217,17 +205,95 @@ final class HelperClient {
         try await withProxy { proxy, done in proxy.setWiFiPower(on, bsdName: bsdName, reply: done) }
     }
 
-    func installedHelperVersion() async -> Int? {
-        await withCheckedContinuation { continuation in
-            let proxy = makeConnection().remoteObjectProxyWithErrorHandler { _ in
-                continuation.resume(returning: nil)
+    /// The helper's view of established TCP connections, or nil if it could not be asked.
+    func establishedConnections() async -> [TCPConnection]? {
+        let text: String? = await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            let proxy = makeConnection().remoteObjectProxyWithErrorHandler { @Sendable error in
+                Diagnostics.note("establishedConnections failed: \(error)")
+                once.resume(nil)
             }
-            guard let helper = proxy as? HelperProtocol else {
-                continuation.resume(returning: nil)
-                return
-            }
-            helper.helperVersion { continuation.resume(returning: $0) }
+            guard let helper = proxy as? HelperProtocol else { once.resume(nil); return }
+            helper.establishedConnections { @Sendable text in once.resume(text) }
         }
+        return text.map(TCPConnectionList.parse)
+    }
+
+    enum HelperProbe: Sendable, CustomStringConvertible {
+        case version(Int)
+        /// The running helper fails the signature the app pins. Happens when an update
+        /// replaces the helper's binary while the old one is still running.
+        case signatureMismatch
+        case unreachable
+
+        var description: String {
+            switch self {
+            case let .version(build): "build \(build)"
+            case .signatureMismatch: "signature mismatch"
+            case .unreachable: "unreachable"
+            }
+        }
+    }
+
+    /// Asks the running helper which build it is.
+    func probe() async -> HelperProbe {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce<HelperProbe>(continuation)
+            let proxy = makeConnection().remoteObjectProxyWithErrorHandler { @Sendable error in
+                let nsError = error as NSError
+                // NSXPCConnectionCodeSigningRequirementFailure
+                once.resume(nsError.domain == NSCocoaErrorDomain && nsError.code == 4102 ? .signatureMismatch : .unreachable)
+            }
+            guard let helper = proxy as? HelperProtocol else { once.resume(.unreachable); return }
+            helper.helperVersion { @Sendable build in once.resume(.version(build)) }
+        }
+    }
+
+    /// Asks the running helper to exit without first checking its signature.
+    ///
+    /// A helper started before an update keeps running its old binary after the update
+    /// replaces the file, and from then on it fails the signature check pinned on every
+    /// connection. It can then neither be used nor, through a pinned connection, told to
+    /// quit — every switch fails until the Mac restarts. This one request carries no data
+    /// and nothing in the reply is trusted; the helper still verifies the app before it
+    /// acts. launchd starts the new binary on the next request.
+    func restartUnverifiedHelper() async {
+        let unpinned = NSXPCConnection(machServiceName: NetworkToggleIDs.helperMachService, options: .privileged)
+        unpinned.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        unpinned.resume()
+        let _: Bool = await withCheckedContinuation { continuation in
+            let once = ResumeOnce<Bool>(continuation)
+            let proxy = unpinned.remoteObjectProxyWithErrorHandler { @Sendable _ in once.resume(false) }
+            guard let helper = proxy as? HelperProtocol else { once.resume(false); return }
+            helper.uninstall { @Sendable _ in once.resume(true) }
+        }
+        unpinned.invalidate()
+        // Drop the pinned connection too, so the next call reaches the new helper.
+        invalidate()
+    }
+}
+
+/// Resumes a continuation exactly once, from whichever XPC callback lands first.
+///
+/// Deliberately not main-actor isolated, and every closure handed to NSXPC is marked
+/// @Sendable for the same reason: NSXPC runs replies, error handlers and invalidation on
+/// its own queue, and a closure that inherits HelperClient's main-actor isolation traps
+/// there. It went unnoticed until a helper call first failed — replacing a stale helper —
+/// and then crashed the app 7 seconds after launch.
+private final class ResumeOnce<T: Sendable>: Sendable {
+    private let continuation: CheckedContinuation<T, Never>
+    private let done = OSAllocatedUnfairLock(initialState: false)
+
+    init(_ continuation: CheckedContinuation<T, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: T) {
+        let first = done.withLock { finished -> Bool in
+            defer { finished = true }
+            return !finished
+        }
+        if first { continuation.resume(returning: value) }
     }
 }
 

@@ -22,5 +22,5 @@ public enum NetworkToggleIDs {
 /// re-registers when they diverge, so a helper left behind by an older install
 /// gets replaced instead of silently answering with stale behaviour.
 public enum HelperVersion {
-    public static let current = 1
+    public static let current = 3
 }

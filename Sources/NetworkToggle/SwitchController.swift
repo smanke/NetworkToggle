@@ -49,7 +49,7 @@ final class SwitchController {
         await run("Switching to \(status.name)…") {
             self.captureUndoState()
             try await self.helper.promote(status.id)
-            if force { try await self.bounceWiFi() }
+            if force { try await self.moveConnectionsOffWiFi() }
             self.lastAction = force
                 ? "Switched to \(status.name) and reconnected."
                 : "Switched to \(status.name)."
@@ -74,14 +74,48 @@ final class SwitchController {
         }
     }
 
-    /// Cycling Wi-Fi is the only thing that moves already-open sockets. Existing TCP
-    /// connections stay bound to their original source address for as long as they live,
-    /// so reordering alone leaves a VPN tunnel or a long-lived session on Wi-Fi forever.
-    private func bounceWiFi() async throws {
-        guard let wifi = monitor.wiFi, let bsd = wifi.bsdName else { return }
+    /// Turns Wi-Fi off until nothing is left on its address, then back on. Returns how many
+    /// connections were still on Wi-Fi when it gave up waiting.
+    ///
+    /// A quick off/on moves nothing. Measured: Wi-Fi came back with the same address within
+    /// five seconds and two stranded file-share connections simply resumed on it. Held off,
+    /// the same connections re-established over Ethernet within eight seconds, so this
+    /// watches the helper's connection list and only turns Wi-Fi back on once they have
+    /// gone, or after 30 seconds. Wi-Fi is turned back on even if waiting fails.
+    @discardableResult
+    private func moveConnectionsOffWiFi() async throws -> Int {
+        guard let wifi = monitor.wiFi, let bsd = wifi.bsdName else { return 0 }
+        let address = wifi.ipv4
+
         try await helper.setWiFiPower(false, bsdName: bsd)
-        try await Task.sleep(for: .seconds(2))
+        var remaining = 0
+        do {
+            let deadline = ContinuousClock.now + .seconds(30)
+            try await Task.sleep(for: .seconds(2))
+            while let address, ContinuousClock.now < deadline {
+                let connections = await helper.establishedConnections() ?? []
+                remaining = connections.filter { $0.localAddress == address }.count
+                if remaining == 0 { break }
+                try await Task.sleep(for: .seconds(1))
+            }
+        } catch {
+            try await helper.setWiFiPower(true, bsdName: bsd)
+            throw error
+        }
         try await helper.setWiFiPower(true, bsdName: bsd)
+        Diagnostics.note("moved off Wi-Fi: \(remaining) connection(s) still on \(address ?? "?") when Wi-Fi came back")
+        return remaining
+    }
+
+    /// Moves connections left on Wi-Fi after another connection became active.
+    func moveConnectionsToActive() async {
+        let active = monitor.vpnCarrier?.name ?? monitor.primary?.name ?? "the active connection"
+        await run("Moving connections to \(active)…") {
+            let remaining = try await self.moveConnectionsOffWiFi()
+            self.lastAction = remaining == 0
+                ? "Moved everything off Wi-Fi to \(active)."
+                : "\(remaining) connection\(remaining == 1 ? "" : "s") stayed on Wi-Fi."
+        }
     }
 
     func toggleWiFi(on: Bool) async {

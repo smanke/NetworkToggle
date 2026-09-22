@@ -13,12 +13,15 @@ final class AppModel {
     let monitor = NetworkMonitor()
     let helper = HelperClient()
     let meter = ThroughputMeter()
+    let strandedMonitor: StrandedTrafficMonitor
+    let strandedMeter = ThroughputMeter()
     private(set) var controller: SwitchController!
 
     @ObservationIgnored private var previewWindow: NSWindow?
     @ObservationIgnored private var helperStateTimer: Task<Void, Never>?
 
     init() {
+        strandedMonitor = StrandedTrafficMonitor(helper: helper)
         controller = SwitchController(monitor: monitor, helper: helper)
         helper.refreshState()
         monitor.start()
@@ -74,11 +77,21 @@ final class AppModel {
     private func retireStaleHelper() {
         guard helper.state.isReady else { return }
         Task { @MainActor in
-            guard let installed = await helper.installedHelperVersion(),
-                  installed < HelperVersion.current
-            else { return }
-            Diagnostics.note("Retiring helper build \(installed); bundle carries \(HelperVersion.current)")
-            await helper.retireRunningHelper()
+            let probe = await helper.probe()
+            switch probe {
+            case let .version(build) where build < HelperVersion.current:
+                Diagnostics.note("Retiring helper build \(build); bundle carries \(HelperVersion.current)")
+                await helper.retireRunningHelper()
+            case .signatureMismatch:
+                Diagnostics.note("Running helper fails its signature check — an update replaced its binary. Asking it to exit.")
+                await helper.restartUnverifiedHelper()
+            default:
+                Diagnostics.note("helper: \(probe), bundle carries build \(HelperVersion.current)")
+                return
+            }
+            // Give launchd a moment, then confirm the replacement is the new build.
+            try? await Task.sleep(for: .seconds(1))
+            Diagnostics.note("helper after restart: \(await helper.probe())")
         }
     }
 
@@ -97,7 +110,8 @@ final class AppModel {
         )
         window.title = "NetworkToggle Preview"
         window.contentView = NSHostingView(
-            rootView: MenuContentView(monitor: monitor, helper: helper, controller: controller, meter: meter)
+            rootView: MenuContentView(monitor: monitor, helper: helper, controller: controller, meter: meter,
+                            strandedMonitor: strandedMonitor, strandedMeter: strandedMeter)
         )
         window.center()
         previewWindow = window

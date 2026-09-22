@@ -77,6 +77,27 @@ sample is one kernel query for a single interface's 64-bit byte counters; the 32
 counters from `getifaddrs` would wrap every 4 GiB, roughly every half minute on a busy
 gigabit link.
 
+## Connections left on Wi-Fi
+
+macOS sends *new* connections over the active connection but never moves existing ones:
+each stays on the address it was opened from until it closes. A file share mounted while
+Wi-Fi was active keeps every copy to it on Wi-Fi indefinitely — one NAS share here had
+moved over 40 GB each way on Wi-Fi while Ethernet was the active connection.
+
+While the menu is open, NetworkToggle lists connections still bound to an interface that
+isn't the active one and shows them, with their live throughput, under **Wi-Fi is still in
+use**. **Move to Ethernet** turns Wi-Fi off until they reconnect over the active
+connection, then turns it back on. A quick off/on is not enough — Wi-Fi comes back with
+the same address within seconds and the connections just resume — so it waits for them to
+actually leave, for up to 30 seconds. File shares reconnect on their own within about ten
+seconds. A connection an app pinned to Wi-Fi deliberately cannot move; the app reports how
+many stayed.
+
+The connection list comes from the privileged helper: macOS gives an ordinary app an empty
+list, which hides the kernel's own file-share connections along with everything else's.
+File-share servers are named from the mount table and resolved in the background; without
+local-network permission the notice shows the server's address instead.
+
 ## VPNs
 
 With a VPN connected, the menu shows the tunnel and the physical connection underneath
