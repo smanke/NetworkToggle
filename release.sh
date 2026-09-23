@@ -12,11 +12,25 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Check the tree before touching anything: setting the version first tripped this guard
+# with the script's own edit, which refused every release that passed a version argument.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "Working tree is dirty. Commit before releasing so the tag matches what shipped." >&2
+  exit 1
+fi
+
 if [ $# -ge 1 ]; then
   VERSION="$1"
-  echo "==> Setting version to ${VERSION}"
-  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" \
-                          -c "Set :CFBundleVersion ${VERSION}" Resources/Info.plist
+  CURRENT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+  if [ "${VERSION}" != "${CURRENT}" ]; then
+    echo "==> Setting version to ${VERSION}"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" \
+                            -c "Set :CFBundleVersion ${VERSION}" Resources/Info.plist
+    # Commit it, so the tag points at a commit carrying the version that shipped.
+    git add Resources/Info.plist
+    git commit -q -m "Bump to ${VERSION}"
+    git push -q origin HEAD
+  fi
 else
   VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 fi
@@ -24,11 +38,6 @@ TAG="v${VERSION}"
 
 if gh release view "${TAG}" >/dev/null 2>&1; then
   echo "Release ${TAG} already exists. Bump the version first." >&2
-  exit 1
-fi
-
-if [ -n "$(git status --porcelain)" ]; then
-  echo "Working tree is dirty. Commit before releasing so the tag matches what shipped." >&2
   exit 1
 fi
 
